@@ -1,0 +1,151 @@
+name: cloud-work
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: cloudwork
+      POSTGRES_DB: cloudwork
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-postgres-change-this}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [platform]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U cloudwork -d cloudwork"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-local-redis-change-this}
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes:
+      - redis-data:/data
+    networks: [platform]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  runtime-manager:
+    container_name: cloud-work-runtime-manager
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime-manager
+    environment:
+      DATABASE_URL: postgres://cloudwork:${POSTGRES_PASSWORD:-local-postgres-change-this}@postgres:5432/cloudwork
+      REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-change-this}@redis:6379
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-local-manager-change-this-4ccbc38537}
+      RUNTIME_TOKEN_SECRET: ${RUNTIME_TOKEN_SECRET:-local-runtime-change-this-146987ad64}
+      USER_DATA_ROOT: ${USER_DATA_ROOT:-/data/cloud-work/users}
+      RUNTIME_IMAGE: ${RUNTIME_IMAGE:-cloud-work-runtime:local}
+      RUNTIME_NETWORK: cloud-runtime
+      MANAGER_CONTAINER_NAME: cloud-work-runtime-manager
+      MCP_GATEWAY_URL: http://mcp-gateway:4100
+      MCP_GATEWAY_CONTAINER_NAME: cloud-work-mcp-gateway
+      MCP_GATEWAY_ADMIN_TOKEN: ${MCP_GATEWAY_ADMIN_TOKEN:?Set MCP_GATEWAY_ADMIN_TOKEN in .env}
+      RUNTIME_CPUS: ${RUNTIME_CPUS:-2}
+      RUNTIME_MEMORY_MB: ${RUNTIME_MEMORY_MB:-4096}
+      RUNTIME_PIDS_LIMIT: ${RUNTIME_PIDS_LIMIT:-256}
+      RUNTIME_IDLE_MINUTES: ${RUNTIME_IDLE_MINUTES:-30}
+      RUNTIME_REMOVE_HOURS: ${RUNTIME_REMOVE_HOURS:-24}
+      RUNTIME_REAPER_INTERVAL_MS: ${RUNTIME_REAPER_INTERVAL_MS:-60000}
+      DSH_PROVIDER: ${DSH_PROVIDER:-deepseek-official}
+      DSH_MODEL: ${DSH_MODEL:-deepseek-v4-flash}
+      DSH_API_KEY: ${DSH_API_KEY:-}
+      DSH_BASE_URL: ${DSH_BASE_URL:-}
+      DSH_CONTEXT_WINDOW: ${DSH_CONTEXT_WINDOW:-}
+      DSH_MAX_TOKENS: ${DSH_MAX_TOKENS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${USER_DATA_ROOT:-/data/cloud-work/users}:${USER_DATA_ROOT:-/data/cloud-work/users}
+    networks: [platform, cloud-runtime, manager-egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mcp-gateway: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 600s
+    restart: unless-stopped
+  mcp-gateway:
+    container_name: cloud-work-mcp-gateway
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: mcp-gateway
+    environment:
+      DATABASE_URL: postgres://cloudwork:${POSTGRES_PASSWORD:-local-postgres-change-this}@postgres:5432/cloudwork
+      MCP_GATEWAY_ADMIN_TOKEN: ${MCP_GATEWAY_ADMIN_TOKEN:?Set MCP_GATEWAY_ADMIN_TOKEN in .env}
+      MCP_ENCRYPTION_KEY: ${MCP_ENCRYPTION_KEY:?Set MCP_ENCRYPTION_KEY in .env}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+      MCP_ALLOWED_PRIVATE_IPS: ${MCP_ALLOWED_PRIVATE_IPS:-}
+    networks: [platform, mcp-egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  mcp-fixture:
+    profiles: [mcp-test]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: mcp-gateway
+    command: [node, --import, tsx, apps/mcp-gateway/src/fixture.ts]
+    environment:
+      MCP_FIXTURE_TOKEN: ${MCP_FIXTURE_TOKEN:-local-mcp-fixture-test-token}
+    networks: [mcp-egress]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: web
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgres://cloudwork:${POSTGRES_PASSWORD:-local-postgres-change-this}@postgres:5432/cloudwork
+      REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-change-this}@redis:6379
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-local-auth-change-this-7b9918d73d827722b6e69972}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-local-manager-change-this-4ccbc38537}
+      RUNTIME_MANAGER_URL: http://runtime-manager:4000
+    networks: [platform, web-edge]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      runtime-manager: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+networks:
+  platform:
+    internal: true
+  cloud-runtime:
+    name: cloud-runtime
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+  manager-egress: {}
+  mcp-egress: {}
+  web-edge: {}
+volumes:
+  postgres-data:
+  redis-data:

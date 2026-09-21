@@ -1,0 +1,67 @@
+# Last deployment overlay. Never turn off confinement just because Docker is present.
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+    workspaceRoot: !!js process.cwd()
+- id: sandbox
+  disabled: true
+- insert:
+    - id: cloud-work-offline-sandbox
+      name: ../../packages/runtime-dsh/src/network-sandbox.mjs
+- id: bash-sandbox
+  disabled: false
+- id: fs-sandbox
+  disabled: false
+- id: approval
+  config:
+    policy: never
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: never
+      workspace-write:
+        sandbox: workspace-write
+        approval: never
+      danger-full-access:
+        sandbox: workspace-write
+        approval: never
+# No platform UI exists for approval or plan-mode switches; refuse escalation.
+- id: session-telemetry-otel
+  disabled: true
+# Model traffic stays in the trusted provider process; no model-controlled network tool.
+- id: tool-web
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: web-fetch-http
+  disabled: true
+- id: web
+  disabled: true
+# Workflow code uses online worker threads rather than the confined shell.
+- id: tool-workflow
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-ralph
+  disabled: true
+# Official parent-process write/edit use path checks with an accepted symlink race.
+# All model file mutations therefore go through the kernel-confined shell instead.
+- id: tool-fs
+  disabled: true
+- id: tools
+  config:
+    mode: native
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model. Workspace commands
+      and their child processes have no network access, including localhost and
+      DNS. Do not attempt npm/pnpm/pip downloads, curl, web fetches or network
+      retries. Use the installed Node.js standard library or the preinstalled
+      Python environment containing numpy, pandas, python-docx (import docx),
+      and PyYAML (import yaml). Use the confined bash/Python tools to read, write,
+      and edit project files; standalone read/write/edit tools are unavailable.
+      Local files and offline computation are available.
+    personaSuffix: Your working directory is {{cwd}}.

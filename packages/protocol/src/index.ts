@@ -1,0 +1,29 @@
+export type RuntimeStatus = 'STARTING' | 'RUNNING' | 'IDLE' | 'STOPPED' | 'REMOVED' | 'ERROR';
+export type AgentEvent =
+  | { type: 'text-delta'; text: string }
+  | { type: 'tool-start'; id: string; name: string; input?: unknown }
+  | { type: 'tool-result'; id: string; output?: unknown }
+  | { type: 'status'; status: 'starting' | 'running' | 'idle' | 'stopped' | 'error' }
+  | { type: 'error'; message: string }
+  | { type: 'user-message'; text: string };
+export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink'; size: number };
+
+export type McpAuthType = 'none' | 'bearer' | 'headers';
+export type McpToolSummary = { name: string; description?: string };
+export type McpConnectionSummary = {
+  id: string; name: string; serverName: string; url: string; transport: 'streamable-http';
+  authType: McpAuthType; hasSecret: boolean; enabled: boolean; revision: number;
+  tools: McpToolSummary[]; lastTestStatus: 'never' | 'ok' | 'error';
+  lastTestError: string | null; lastTestAt: string | null; createdAt: string; updatedAt: string;
+};
+export type McpConnectionInput = {
+  name: string; url: string; authType: McpAuthType; token?: string;
+  headers?: Record<string, string>; enabled?: boolean;
+};
+export type McpConnectionList = { connections: McpConnectionSummary[]; policy: { allowedOrigins: string[] } };
+export type WorkspaceMcpBindings = { connections: McpConnectionSummary[]; enabledConnectionIds: string[] };
+/** Only short-lived gateway grants; upstream credentials never enter a user runtime. */
+export type McpRunSnapshot = {
+  runId: string; revision: string;
+  connections: Array<{ id: string; serverName: string; url: string; token: string }>;
+};

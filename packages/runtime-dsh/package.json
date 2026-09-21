@@ -1,0 +1,16 @@
+{
+  "name": "@cloud-work/runtime-dsh",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit", "build": "tsc --noEmit", "test": "tsx --test src/*.test.ts" },
+  "dependencies": {
+    "@cloud-work/protocol": "workspace:*",
+    "@cloud-work/runtime-core": "workspace:*",
+    "@cloud-work/workspace": "workspace:*",
+    "@deepseek-ai/dsh": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-sdk-client": "0.1.5-rc.2"
+  }
+}

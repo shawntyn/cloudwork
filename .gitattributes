@@ -1,0 +1,2 @@
+# Unified patch context lines intentionally prefix upstream tab indentation with a space.
+packages/runtime-dsh/patches/*.patch whitespace=-space-before-tab

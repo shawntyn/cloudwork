@@ -1,0 +1,28 @@
+{
+  "name": "@cloud-work/runtime-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@cloud-work/database": "workspace:*",
+    "@cloud-work/protocol": "workspace:*",
+    "@cloud-work/workspace": "workspace:*",
+    "bullmq": "6.3.8",
+    "dockerode": "5.0.1",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.5",
+    "ioredis": "6.0.0",
+    "tar-fs": "3.1.3"
+  },
+  "devDependencies": {
+    "@types/dockerode": "4.0.1",
+    "@types/tar-fs": "2.0.4"
+  }
+}

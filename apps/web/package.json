@@ -1,0 +1,29 @@
+{
+  "name": "@cloud-work/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "node ../../scripts/build-web.mjs",
+    "start": "next start --hostname 0.0.0.0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloud-work/auth": "workspace:*",
+    "@cloud-work/database": "workspace:*",
+    "@cloud-work/protocol": "workspace:*",
+    "next": "16.3.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "@cloud-work/workspace": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "ioredis": "6.0.0",
+    "better-auth": "1.7.5",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  }
+}

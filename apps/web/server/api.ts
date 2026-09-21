@@ -1,0 +1,83 @@
+import { auth } from '@cloud-work/auth';
+import { relativeParts } from '@cloud-work/workspace';
+import { db, workspaces, agentSessions } from '@cloud-work/database';
+import { and, eq } from 'drizzle-orm';
+import { Redis } from 'ioredis';
+import { ZodError, z } from 'zod';
+export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
+export const idSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/);
+let client: Redis | undefined;
+export function redis() { return client ??= new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: 2, lazyConnect: true }); }
+export async function currentUser(request: Request) {
+  const session = await auth.api.getSession({ headers: request.headers });
+  if (!session) throw new ApiError(401, 'Please sign in to continue');
+  return session.user;
+}
+export function safeOrigin(request: Request) {
+  if (['GET','HEAD','OPTIONS'].includes(request.method)) return;
+  const origin = request.headers.get('origin');
+  const expected = new URL(process.env.BETTER_AUTH_URL ?? 'http://localhost:3000').origin;
+  if (origin && origin !== expected) throw new ApiError(403, 'Request origin is not allowed');
+  if (request.headers.get('content-type') && !request.headers.get('content-type')!.startsWith('application/json')) throw new ApiError(415, 'Use application/json');
+}
+export function api(fn: (request: Request) => Promise<Response>) {
+  return async (request: Request) => {
+    try { safeOrigin(request); return await fn(request); }
+    catch (error) {
+      if (error instanceof ApiError) return Response.json({ error: error.message }, { status: error.status });
+      if (error instanceof ZodError || error instanceof SyntaxError) return Response.json({ error: 'Invalid request data' }, { status: 400 });
+      console.error('API request failed:', error);
+      return Response.json({ error: 'The request could not be completed. Please try again.' }, { status: 500 });
+    }
+  };
+}
+export async function body(request: Request) {
+  const limit = 3 * 1024 * 1024;
+  if (Number(request.headers.get('content-length')) > limit) throw new ApiError(413, 'Request is too large');
+  if (!request.body) throw new ApiError(400, 'JSON body is required');
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) { await reader.cancel(); throw new ApiError(413, 'Request is too large'); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+export function validatePath(value: string, allowRoot = false) {
+  try { return relativeParts(value,allowRoot); }
+  catch { throw new ApiError(400, 'Path must be relative and stay inside the workspace'); }
+}
+export async function ownedWorkspace(userId: string, id: string) {
+  idSchema.parse(id);
+  const [workspace] = await db.select().from(workspaces).where(and(eq(workspaces.id,id), eq(workspaces.userId,userId))).limit(1);
+  if (!workspace) throw new ApiError(404, 'Workspace not found');
+  return workspace;
+}
+export async function ownedSession(userId: string, id: string) {
+  idSchema.parse(id);
+  const [session] = await db.select().from(agentSessions).where(and(eq(agentSessions.id,id), eq(agentSessions.userId,userId))).limit(1);
+  if (!session) throw new ApiError(404, 'Session not found');
+  await ownedWorkspace(userId, session.workspaceId);
+  return session;
+}
+export async function manager(userId: string, suffix: string, method = 'GET', data?: unknown): Promise<any> {
+  idSchema.parse(userId);
+  const response = await fetch(`${process.env.RUNTIME_MANAGER_URL ?? 'http://localhost:4000'}/internal/users/${userId}${suffix}`, {
+    method, headers: { authorization: `Bearer ${process.env.MANAGER_TOKEN}`, ...(data === undefined ? {} : { 'content-type': 'application/json' }) },
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }), cache: 'no-store', signal: AbortSignal.timeout(180000),
+  });
+  const result = await response.json().catch(() => ({ error: 'Runtime manager returned an invalid response' }));
+  if (!response.ok) throw new ApiError(response.status >= 400 && response.status < 500 ? response.status : 503, result.error ?? result.message ?? 'Runtime is unavailable');
+  return result;
+}
+export async function rateLimit(userId: string, kind: string, max = 120) {
+  const key = `rate:${kind}:${userId}:${Math.floor(Date.now()/60000)}`;
+  const count = await redis().incr(key);
+  if (count === 1) await redis().expire(key, 90);
+  if (count > max) throw new ApiError(429, 'Too many requests. Please wait a minute.');
+}

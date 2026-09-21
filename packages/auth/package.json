@@ -1,0 +1,18 @@
+{
+  "name": "@cloud-work/auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloud-work/database": "workspace:*",
+    "better-auth": "1.7.5",
+    "@better-auth/drizzle-adapter": "1.7.5"
+  }
+}
