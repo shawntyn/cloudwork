@@ -35,9 +35,16 @@ test('POSIX file workflow and symlink escape defenses', async () => {
     await deleteEntry(root,'escape'); // Unlinking the link must not remove its target.
     assert.equal(await readFile(path.join(outside,'secret'),'utf8'),'private');
     await assert.rejects(deleteEntry(root,''));
-    await assert.rejects(writeFileContent(root,'big.txt','x'.repeat(2097153)));
+    await assert.rejects(writeFileContent(root,'big.txt','x'.repeat(10 * 1024 * 1024 + 1)));
     await writeFile(path.join(root,'binary.bin'),Buffer.from([0,1,2]));
     await assert.rejects(readFileContent(root,'binary.bin'));
+    await writeFile(path.join(root,'invalid-utf8.bin'),Buffer.from([0xff,0xfe,0x41]));
+    await assert.rejects(readFileContent(root,'invalid-utf8.bin'), /UTF-8/);
+    await writeFileContent(root,'unicode.txt','\ufeff中文内容');
+    assert.equal(await readFileContent(root,'unicode.txt'),'\ufeff中文内容');
+    const largeText = 'x'.repeat(3 * 1024 * 1024);
+    await writeFileContent(root,'larger.txt',largeText);
+    assert.equal(await readFileContent(root,'larger.txt'),largeText);
     await deleteEntry(root,'src');
     await assert.rejects(readFileContent(root,'src/b.ts'));
   } finally { await rm(base,{recursive:true,force:true}); }

@@ -1,12 +1,13 @@
 import { api, body, currentUser, manager, ownedWorkspace, validatePath } from '@/server/api';
 import { z } from 'zod';
+import { FILE_TRANSFER_LIMITS } from '@cloud-work/protocol';
 export const dynamic = 'force-dynamic';
 async function route(request: Request) {
   const user = await currentUser(request); const url = new URL(request.url);
   const workspace = await ownedWorkspace(user.id, url.pathname.split('/')[3]!);
   const suffix = `/workspaces/${workspace.id}/files/content`;
   if (request.method === 'PUT') {
-    const data = z.object({path:z.string().min(1),content:z.string().max(2097152)}).strict().parse(await body(request)); validatePath(data.path);
+    const data = z.object({path:z.string().min(1),content:z.string().max(FILE_TRANSFER_LIMITS.maxTextBytes).refine(value => Buffer.byteLength(value, 'utf8') <= FILE_TRANSFER_LIMITS.maxTextBytes)}).strict().parse(await body(request, 64 * 1024 * 1024)); validatePath(data.path);
     return Response.json(await manager(user.id,suffix,'PUT',data));
   }
   const path = url.searchParams.get('path') ?? ''; validatePath(path);

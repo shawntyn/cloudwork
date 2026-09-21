@@ -1,10 +1,12 @@
 import Fastify from 'fastify';
 import { and, eq } from 'drizzle-orm';
 import { db, agentSessions } from '@cloud-work/database';
+import { FILE_TRANSFER_LIMITS } from '@cloud-work/protocol';
 import { HttpError, safeId, secureEqual } from './config.js';
 import { leaseKinds, type LeaseKind } from './leases.js';
 import type { RuntimeManager } from './lifecycle.js';
 import { ownedSession, ownedWorkspace, responseJson, workspaceDeleted, workspaceLock, type Runs } from './runs.js';
+import { registerFileTransfers } from './file-transfers.js';
 
 type Params = { userId: string; workspaceId: string; sessionId: string; connectionId: string; kind: string; leaseId: string };
 const object = (value: unknown): Record<string, unknown> => {
@@ -13,7 +15,7 @@ const object = (value: unknown): Record<string, unknown> => {
 };
 
 export function createServer(manager: RuntimeManager, runs: Runs) {
-  const app = Fastify({ logger: true, bodyLimit: 3 * 1024 * 1024, requestTimeout: 180_000 });
+  const app = Fastify({ logger: true, bodyLimit: 3 * 1024 * 1024, requestTimeout: FILE_TRANSFER_LIMITS.timeoutMs });
   let ready = false, startupError: string | undefined;
   app.setErrorHandler((error, request, reply) => {
     const known: Error & { statusCode?: number } = error instanceof Error ? error : new Error('Unexpected manager error');
@@ -42,6 +44,8 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
     await ownedWorkspace(userId, workspaceId);
     if (await manager.leases.redis.exists(workspaceDeleted(workspaceId))) throw new HttpError(410, 'Workspace was deleted');
   }
+
+  registerFileTransfers(app, manager, checkWorkspace);
 
   for (const method of ['GET', 'POST'] as const) {
     app.route<{ Params: Params }>({ method, url: `${base}/mcp/connections`, handler: request => manager.mcp.request(
@@ -102,6 +106,7 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
     const suffixes = method === 'GET' || method === 'PUT' ? method === 'GET' ? ['/files', '/files/content'] : ['/files/content'] : ['/files'];
     for (const suffix of suffixes) app.route<{ Params: Params; Querystring: { path?: string } }>({
       method, url: `${base}/workspaces/:workspaceId${suffix}`,
+      ...(method === 'PUT' && suffix === '/files/content' ? { bodyLimit: FILE_TRANSFER_LIMITS.maxTextBytes * 6 + 1024 * 1024 } : {}),
       handler: async request => {
         const user = safeId(request.params.userId), workspace = safeId(request.params.workspaceId);
         return manager.leases.withLock(workspaceLock(workspace), async () => {

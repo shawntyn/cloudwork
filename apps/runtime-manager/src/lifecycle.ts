@@ -238,9 +238,12 @@ export class RuntimeManager {
 
   async request(userId: string, suffix: string, init: RequestInit = {}, timeoutMs = 30_000) {
     if (!suffix.startsWith('/') || suffix.startsWith('//')) throw new Error('Invalid runtime route');
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');
+    headers.set('authorization', `Bearer ${runtimeToken(userId, this.config.tokenSecret)}`);
     return fetch(`${await this.address(userId)}${suffix}`, {
       ...init, signal: init.signal ?? AbortSignal.timeout(timeoutMs),
-      headers: { ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...init.headers, Authorization: `Bearer ${runtimeToken(userId, this.config.tokenSecret)}` },
+      headers,
     });
   }
 
@@ -267,6 +270,10 @@ export class RuntimeManager {
     const heartbeat = setInterval(() => { void this.leases.setBusy(userId, 'active-connections', id).catch(error => this.log.error(error, 'Activity lease refresh failed')); }, this.config.heartbeatMs);
     heartbeat.unref();
     try { if (ensureRuntime) await this.ensureRuntime(userId); return await operation(); }
-    finally { clearInterval(heartbeat); await this.touchRuntime(userId); await this.leases.clearBusy(userId, 'active-connections', id); }
+    finally {
+      clearInterval(heartbeat);
+      try { await this.touchRuntime(userId); }
+      finally { await this.leases.clearBusy(userId, 'active-connections', id); }
+    }
   }
 }

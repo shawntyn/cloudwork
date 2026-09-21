@@ -1,5 +1,18 @@
 # 实际验证记录
 
+## 流式文件传输与基础预览（2026-09-21）
+
+本轮本地 Web、manager 和验证账号 Runtime 已更新。当前新建用户使用 `cloud-work-runtime:files-v2`；其他已有用户容器仍需按 README 的 Remove/Start 流程刷新。原浏览器测试账号升级前后分别校验了 46 个原有文件和 52 个包含新测试产物的文件，SHA-256 均保持一致。
+
+- `pnpm typecheck`、`pnpm build`、Compose 配置和 Docker 构建通过。最终 `pnpm test` 为 **118 项通过、2 项 Linux 专用测试在 macOS 跳过**；在新 Linux 镜像中补跑文件/HTTP/沙箱测试，**20 项全部通过**，包含目录描述符置换与用户代码断网。
+- `pnpm test:files` 的 **9 项真实公共 API 检查通过**：100 MiB 流式上传下载 SHA-256 一致、8 MiB 二进制与目录 ZIP 内容一致、嵌套与空目录保留、重名不覆盖/替换/保留两者、8 MiB 同名请求稳定返回 409、取消清理、所有权与 Origin、限额和路径验证、图片签名检查、3 MiB 文本编辑。报告：`artifacts/file-transfer-integration.json`。
+- 实际浏览器完成多文件选择、文件夹选择上传、文本只读打开及 Edit/Save、无扩展名/自定义扩展名文本兼容、桌面与手机 PNG 显示、PDF 仅下载、原文件与目录 ZIP 下载事件、重名保留两者/取消/重试/跳过、101 MiB 文件前置拒绝。对 UI 写入的文本、图片、PDF 和 ZIP 再做字节校验。检查 1280×720、390×844、360×780；窄屏无横向溢出，未发现浏览器 warning/error。报告：`artifacts/file-transfer-ui.json`。
+- 修复了真实联调发现的两处问题：manager 重复合并 JSON/二进制 Content-Type；大文件提前拒绝时关闭连接导致 409 变成 503。均已加入行为回归测试。错误请求的剩余正文读取仍受字节限额、取消和绝对超时保护。
+
+本轮未增加 PDF、Word、Excel 预览或断点续传；未新增模型调用功能，因此没有重复执行模型验证。原生目录拖放未在浏览器自动化中实际操作；递归条目、空目录和分页读取由辅助测试与真实 HTTP/ZIP 检查覆盖。测试专用账号和文件保留，600 MiB 的临时 UI 压力测试目录已清理。
+
+以下为此前版本的验证历史。
+
 验证日期：2026-09-20。环境：macOS + Docker Desktop，Linux 用户 Runtime，服务地址 `http://localhost:3000`。
 
 ## 离线工作区更新（当前运行版本）

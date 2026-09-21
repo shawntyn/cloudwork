@@ -1,7 +1,11 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FILE_TRANSFER_LIMITS } from "@cloud-work/protocol";
 import { api, errorMessage, type FileEntry } from "./client";
 import { ErrorBanner, Icon, Modal } from "./ui";
+import { FileUploads } from "./file-upload";
+import { FilePreview } from "./file-preview";
+import { downloadUrl, isTextFile } from "./file-transfer";
 type EditFile = {
     path: string;
     original: string;
@@ -23,6 +27,9 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
     const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
     const [error, setError] = useState("");
     const [editor, setEditor] = useState<EditFile | null>(null);
+    const [editing, setEditing] = useState(false);
+    const [preview, setPreview] = useState<FileEntry | null>(null);
+    const [uploading, setUploading] = useState(false);
     const [loadingFile, setLoadingFile] = useState(false);
     const [selected, setSelected] = useState<FileEntry | null>(null);
     const [action, setAction] = useState<FileAction | null>(null);
@@ -77,7 +84,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         function beforeUnload(event: BeforeUnloadEvent) { event.preventDefault(); }
         function beforeNavigation(event: MouseEvent) {
             const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
-            if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+            if (!link || link.hasAttribute("download") || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
                 return;
             if (link.getAttribute("href") !== window.location.pathname && !window.confirm("Discard unsaved changes to this file?")) {
                 event.preventDefault();
@@ -98,8 +105,8 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
     }, []);
     function discardAllowed() { return !dirty || window.confirm("Discard unsaved changes to this file?"); }
     async function openEntry(entry: FileEntry) {
-        setSelected(entry);
         if (entry.type === "directory") {
+            setSelected(entry);
             const opening = !expanded.has(entry.path);
             setExpanded(current => { const next = new Set(current); if (opening)
                 next.add(entry.path);
@@ -115,6 +122,14 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         }
         if (entry.path === editor?.path || !discardAllowed())
             return;
+        setSelected(entry);
+        setError("");
+        if (!isTextFile(entry.path) || entry.size > FILE_TRANSFER_LIMITS.maxTextBytes) {
+            setEditor(null);
+            setPreview(entry);
+            setEditing(false);
+            return;
+        }
         setLoadingFile(true);
         setError("");
         setSaved(false);
@@ -122,10 +137,15 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             const data = await api<{
                 content: string;
             }>(`${endpoint}/content?path=${encodeURIComponent(entry.path)}`);
+            setPreview(null);
+            setEditing(false);
             setEditor({ path: entry.path, original: data.content, content: data.content });
         }
         catch (err) {
-            setError(errorMessage(err));
+            // A text extension may still contain binary or non-UTF-8 data.
+            setEditor(null);
+            setPreview(entry);
+            if (!/binary|utf.?8|text file/i.test(errorMessage(err))) setError(errorMessage(err));
         }
         finally {
             setLoadingFile(false);
@@ -134,6 +154,10 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
     async function save() {
         if (!editor || saving || !dirty)
             return;
+        if (new TextEncoder().encode(editor.content).byteLength > FILE_TRANSFER_LIMITS.maxTextBytes) {
+            setError("Text files must be no larger than 10 MiB to save in the editor.");
+            return;
+        }
         setSaving(true);
         setError("");
         const current = editor;
@@ -182,14 +206,18 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
                 await api(endpoint, { method: "POST", body: JSON.stringify(action.kind === "directory" ? { operation: "mkdir", path } : { operation: "rename", path: action.path, to: path }) });
             if (action.kind === "rename") {
                 setEditor(current => current && (current.path === action.path || current.path.startsWith(`${action.path}/`)) ? { ...current, path: path + current.path.slice(action.path.length) } : current);
+                setPreview(current => current && (current.path === action.path || current.path.startsWith(`${action.path}/`)) ? { ...current, path: path + current.path.slice(action.path.length), name: current.path === action.path ? path.split("/").at(-1)! : current.name } : current);
                 setSelected(null);
             }
             setAction(null);
             setTree({});
             setExpanded(new Set([""]));
             await load("");
-            if (action.kind === "file")
+            if (action.kind === "file") {
+                setPreview(null);
+                setEditing(true);
                 setEditor({ path, original: "", content: "" });
+            }
         }
         catch (err) {
             setActionError(errorMessage(err));
@@ -209,6 +237,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             await api(`${endpoint}?path=${encodeURIComponent(selected.path)}`, { method: "DELETE" });
             if (editor && (editor.path === selected.path || editor.path.startsWith(`${selected.path}/`)))
                 setEditor(null);
+            if (preview && (preview.path === selected.path || preview.path.startsWith(`${selected.path}/`))) setPreview(null);
             setSelected(null);
             setTree({});
             setExpanded(new Set([""]));
@@ -222,11 +251,45 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         }
     }
     function renderDirectory(path: string, level: number): React.ReactNode {
-        return tree[path]?.map(entry => <div key={entry.path}><button disabled={loadingFile} className={`file-row ${selected?.path === entry.path ? "selected" : ""}`} style={{ paddingLeft: 15 + level * 15 }} onClick={() => void openEntry(entry)} title={entry.path}><span className="file-chevron">{entry.type === "directory" && <Icon name="chevron" size={12} className={expanded.has(entry.path) ? "down" : ""}/>}</span><Icon name={entry.type === "directory" ? "folder" : "file"} size={16}/><span>{entry.name}</span>{entry.type === "symlink" && <span className="muted">↗</span>}</button>{entry.type === "directory" && expanded.has(entry.path) && <div role="group">{loadingPaths.has(entry.path) ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Loading…</div> : tree[entry.path]?.length === 0 ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Empty folder</div> : renderDirectory(entry.path, level + 1)}</div>}</div>);
+        return tree[path]?.map(entry => <div key={entry.path}><button disabled={loadingFile || uploading} className={`file-row ${selected?.path === entry.path ? "selected" : ""}`} style={{ paddingLeft: 15 + level * 15 }} onClick={() => void openEntry(entry)} title={entry.path}><span className="file-chevron">{entry.type === "directory" && <Icon name="chevron" size={12} className={expanded.has(entry.path) ? "down" : ""}/>}</span><Icon name={entry.type === "directory" ? "folder" : "file"} size={16}/><span>{entry.name}</span>{entry.type === "symlink" && <span className="muted">↗</span>}</button>{entry.type === "directory" && expanded.has(entry.path) && <div role="group">{loadingPaths.has(entry.path) ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Loading…</div> : tree[entry.path]?.length === 0 ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Empty folder</div> : renderDirectory(entry.path, level + 1)}</div>}</div>);
     }
-    return <><aside ref={drawerRef} inert={narrow && !open} aria-hidden={narrow && !open ? true : undefined} className={`files-panel ${open ? "mobile-open" : ""}`}><div className="panel-heading"><div><Icon name="folder" size={17}/><h2>Files</h2></div><div className="file-toolbar"><button className="icon-button" title="Refresh files" aria-label="Refresh files" onClick={() => { setError(""); for (const path of expanded)
-        void load(path); }}><Icon name="refresh" size={15}/></button><button className="icon-button mobile-only" aria-label="Close files" onClick={closeDrawer}><Icon name="close" size={17}/></button></div></div><div className="file-actions"><button onClick={() => { if (discardAllowed())
-        beginAction("file"); }} title="New file"><Icon name="file" size={15}/>New file</button><button onClick={() => beginAction("directory")} title="New folder"><Icon name="plus" size={15}/>Folder</button></div>{error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}<div className="file-tree" aria-label="Workspace files">{loadingPaths.has("") && !tree[""] ? <div className="tree-loading">Loading files…</div> : tree[""]?.length === 0 ? <div className="files-empty"><Icon name="folder" size={26}/><p>No files yet</p><span>Create a file or ask your agent<br />to start building.</span></div> : renderDirectory("", 0)}</div>{selected && <div className="selected-file-actions"><span title={selected.path}>{selected.name}</span><button className="icon-button" aria-label={`Rename ${selected.name}`} title="Rename" disabled={mutating} onClick={() => beginAction("rename")}><Icon name="edit" size={15}/></button><button className="icon-button danger" aria-label={`Delete ${selected.name}`} title="Delete" disabled={mutating} onClick={() => void remove()}><Icon name="trash" size={15}/></button></div>}<div className="files-footer"><Icon name="code" size={14}/><span>Persistent workspace files</span></div></aside>{editor && <section className="editor-panel" aria-label="File editor"><div className="editor-heading"><div><Icon name="file" size={16}/><span title={editor.path}>{editor.path}</span>{dirty && <span className="unsaved-dot" title="Unsaved changes"/>}</div><button className="icon-button" disabled={saving} aria-label="Close file" onClick={() => { if (discardAllowed())
-        setEditor(null); }}><Icon name="close" size={17}/></button></div><div className="editor-meta"><span>UTF-8 · {editor.content.split("\n").length} lines</span><button className="button button-small button-secondary" onClick={() => void save()} disabled={!dirty || saving}><Icon name={saved && !dirty ? "check" : "save"} size={14}/>{saving ? "Saving…" : saved && !dirty ? "Saved" : "Save"}</button></div><textarea className="code-editor" aria-label={`Edit ${editor.path}`} spellCheck={false} value={editor.content} onChange={event => { setEditor({ ...editor, content: event.target.value }); setSaved(false); }}/><div className="editor-footer"><span>{dirty ? "Unsaved changes" : "All changes saved"}</span><span>⌘ / Ctrl S to save</span></div></section>}{action && <Modal title={action.kind === "file" ? "New file" : action.kind === "directory" ? "New folder" : "Rename entry"} description="Use a path relative to this workspace." onClose={() => { if (!mutating)
-        setAction(null); }}><form onSubmit={performAction}><label>{action.kind === "rename" ? "New path" : "Path"}<input autoFocus required value={actionValue} onChange={e => setActionValue(e.target.value)} placeholder={action.kind === "directory" ? "src/components" : "src/index.ts"}/></label>{actionError && <ErrorBanner message={actionError}/>}<div className="modal-actions"><button className="button button-secondary" type="button" disabled={mutating} onClick={() => setAction(null)}>Cancel</button><button className="button button-primary" disabled={mutating}>{mutating ? "Saving…" : action.kind === "rename" ? "Rename" : "Create"}</button></div></form></Modal>}</>;
+    return <>
+        <aside ref={drawerRef} inert={narrow && !open} aria-hidden={narrow && !open ? true : undefined} className={`files-panel ${open ? "mobile-open" : ""}`}>
+            <div className="panel-heading"><div><Icon name="folder" size={17}/><h2>Files</h2></div><div className="file-toolbar">
+                <a className="icon-button" download href={downloadUrl(endpoint, "", true)} title="Download workspace as ZIP" aria-label="Download workspace as ZIP"><Icon name="download" size={15}/></a>
+                <button className="icon-button" title="Refresh files" aria-label="Refresh files" onClick={() => { setError(""); for (const path of expanded) void load(path); }}><Icon name="refresh" size={15}/></button>
+                <button className="icon-button mobile-only" aria-label="Close files" onClick={closeDrawer}><Icon name="close" size={17}/></button>
+            </div></div>
+            <div className="file-actions"><button disabled={uploading || mutating} onClick={() => { if (discardAllowed()) beginAction("file"); }} title="New file"><Icon name="file" size={15}/>New file</button><button disabled={uploading || mutating} onClick={() => beginAction("directory")} title="New folder"><Icon name="plus" size={15}/>Folder</button></div>
+            {error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}
+            <FileUploads key={endpoint} endpoint={endpoint} disabled={saving || mutating || loadingFile} destination={selected?.type === "directory" ? selected.path : ""} onRoot={() => setSelected(null)} onBusy={setUploading} beforeUpload={() => {
+                if (saving || mutating || loadingFile) return false;
+                if (!discardAllowed()) return false;
+                setEditor(null); setPreview(null); return true;
+            }} onChanged={() => { for (const path of expanded) void load(path); }}>
+                <div className="file-tree" aria-label="Workspace files">{loadingPaths.has("") && !tree[""] ? <div className="tree-loading">Loading files…</div> : tree[""]?.length === 0 ? <div className="files-empty"><Icon name="folder" size={26}/><p>No files yet</p><span>Drop files or folders here,<br/>or ask your agent to start building.</span></div> : renderDirectory("", 0)}</div>
+            </FileUploads>
+            {selected && <div className="selected-file-actions"><span title={selected.path}>{selected.name}</span>
+                {selected.type !== "symlink" && <a className="icon-button" download href={downloadUrl(endpoint, selected.path, selected.type === "directory")} aria-label={`Download ${selected.name}${selected.type === "directory" ? " as ZIP" : ""}`} title={selected.type === "directory" ? "Download folder as ZIP" : "Download file"}><Icon name="download" size={15}/></a>}
+                <button className="icon-button" aria-label={`Rename ${selected.name}`} title="Rename" disabled={mutating || uploading} onClick={() => beginAction("rename")}><Icon name="edit" size={15}/></button>
+                <button className="icon-button danger" aria-label={`Delete ${selected.name}`} title="Delete" disabled={mutating || uploading} onClick={() => void remove()}><Icon name="trash" size={15}/></button>
+            </div>}
+            <div className="files-footer"><Icon name="code" size={14}/><span>Persistent workspace files</span></div>
+        </aside>
+        {editor && <section className="editor-panel" aria-label={editing ? "File editor" : "Text preview"}>
+            <div className="editor-heading"><div><Icon name="file" size={16}/><span title={editor.path}>{editor.path}</span>{dirty && <span className="unsaved-dot" title="Unsaved changes"/>}</div><button className="icon-button" disabled={saving} aria-label="Close file" onClick={() => { if (discardAllowed()) setEditor(null); }}><Icon name="close" size={17}/></button></div>
+            <div className="editor-meta"><span>UTF-8 · {editor.content.split("\n").length} lines · {editing ? "Editing" : "Read only"}</span><div className="file-editor-actions">
+                <a className="icon-button" download href={downloadUrl(endpoint, editor.path)} aria-label="Download current file" title="Download saved file"><Icon name="download" size={14}/></a>
+                {editing ? <><button className="button button-small button-secondary" disabled={saving} onClick={() => { if (discardAllowed()) { setEditor({ ...editor, content: editor.original }); setEditing(false); } }}>Preview</button><button className="button button-small button-secondary" onClick={() => void save()} disabled={!dirty || saving}><Icon name={saved && !dirty ? "check" : "save"} size={14}/>{saving ? "Saving…" : saved && !dirty ? "Saved" : "Save"}</button></> : <button className="button button-small button-secondary" onClick={() => setEditing(true)}><Icon name="edit" size={14}/>Edit</button>}
+            </div></div>
+            <textarea className="code-editor" aria-label={`${editing ? "Edit" : "Preview"} ${editor.path}`} readOnly={!editing} spellCheck={false} value={editor.content} onChange={event => { setEditor({ ...editor, content: event.target.value }); setSaved(false); }}/>
+            <div className="editor-footer"><span>{dirty ? "Unsaved changes" : editing ? "All changes saved" : "Read-only preview"}</span><span>{editing ? "⌘ / Ctrl S to save" : "Choose Edit to make changes"}</span></div>
+        </section>}
+        {preview && <FilePreview key={preview.path} entry={preview} endpoint={endpoint} onClose={() => setPreview(null)}/>}
+        {action && <Modal title={action.kind === "file" ? "New file" : action.kind === "directory" ? "New folder" : "Rename entry"} description="Use a path relative to this workspace." onClose={() => { if (!mutating) setAction(null); }}><form onSubmit={performAction}>
+            <label>{action.kind === "rename" ? "New path" : "Path"}<input autoFocus required value={actionValue} onChange={event => setActionValue(event.target.value)} placeholder={action.kind === "directory" ? "src/components" : "src/index.ts"}/></label>
+            {actionError && <ErrorBanner message={actionError}/>}
+            <div className="modal-actions"><button className="button button-secondary" type="button" disabled={mutating} onClick={() => setAction(null)}>Cancel</button><button className="button button-primary" disabled={mutating}>{mutating ? "Saving…" : action.kind === "rename" ? "Rename" : "Create"}</button></div>
+        </form></Modal>}
+    </>;
 }

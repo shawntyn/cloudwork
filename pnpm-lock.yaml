@@ -130,6 +130,9 @@ importers:
 
   docker/runtime:
     dependencies:
+      '@cloud-work/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@cloud-work/runtime-core':
         specifier: workspace:*
         version: link:../../packages/runtime-core
@@ -202,6 +205,9 @@ importers:
       '@cloud-work/protocol':
         specifier: workspace:*
         version: link:../protocol
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
 
 packages:
 

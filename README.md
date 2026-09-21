@@ -48,7 +48,17 @@ tests/                 文件边界测试
 
 首次访问创建邮箱密码账号，密码至少 12 位；登录后点击 **New Workspace**。进入 Workspace 会确保该用户 Runtime 已就绪，再进入服务端生成的目录 `/home/work/workspaces/ws_<uuid>`。同一用户所有 Workspace 共用一个容器；不同用户分别拥有 `cloud-work-runtime-<安全 userId>`。业务 Workspace 不使用 DSH Workspace registry。
 
-页面支持会话创建/切换、增量对话、工具调用详情、Stop、文件树、UTF-8 文件读写、目录创建、重命名与删除。文件编辑上限 2 MiB；二进制文件和符号链接内容不提供编辑。文件写入前会验证并固定父目录描述符，Linux `/proc/self/fd` 路径避免祖先目录被替换成符号链接的竞争。所有公共 Workspace/Session API 都检查当前用户，改变状态的请求验证 Origin。
+页面支持会话创建/切换、增量对话、工具调用详情、Stop、文件树、UTF-8 文件读写、目录创建、重命名与删除。文本默认只读查看，点击 **Edit** 后可编辑，查看和编辑上限均为 10 MiB。二进制文件和符号链接内容不提供编辑。文件操作会验证并固定父目录描述符，Linux `/proc/self/fd` 路径避免祖先目录被替换成符号链接的竞争。所有公共 Workspace/Session API 都检查当前用户，改变状态的请求验证 Origin。
+
+### 文件上传、下载与预览
+
+- Files 面板支持选择多个文件、选择文件夹和拖放。单文件上传最大 **100 MiB**，每批累计最大 **1 GiB / 5000 项**（包括目录与隐含父目录），按顺序流式上传并显示进度。重名时选择替换、跳过或保留两者；默认不覆盖。取消会清理当前文件的临时内容，已完成的文件和已创建的目录保留；重试只处理未完成项。
+- 文件夹保持相对层级。支持目录条目 API 的浏览器拖放可保留空目录；文件夹选择器仅返回文件，无法保留空目录。上传批次空闲 15 分钟过期，每个用户 Runtime 最多同时保留 16 个批次。
+- 文件按原样流式下载，原文件下载不受 100 MiB 上传上限约束。文件夹或整个 Workspace 下载为流式 ZIP（不压缩内容），最多 **1 GiB / 5000 项**，包含空目录。含符号链接或特殊文件时拒绝打包，不跨越工作区边界。
+- 浏览器只读预览 **PNG、JPEG、GIF、WebP**（最大 **20 MiB**）；服务端验证文件签名并设置 `nosniff`。SVG/HTML 不作为网页渲染。**PDF、Word、Excel 暂不提供文档预览**，可下载原文件。
+- 传输经过 Web → manager → 用户 Runtime，无整文件 JSON/base64 包装。单次请求最长 15 分钟，断连会取消上游传输；manager 在传输结束前保持活动租约。用户代码沙箱仍然离线。
+
+反向代理需关闭上传请求缓冲和下载响应缓冲，并允许至少 100 MiB 请求体及 15 分钟传输，例如 Nginx 对文件 API 设置 `proxy_request_buffering off`、`proxy_buffering off`、`client_max_body_size 110m`、`proxy_read_timeout 900s` 和 `proxy_send_timeout 900s`。仍由应用按实际收到的字节执行限制。更新此功能后按前文使用新的 `RUNTIME_IMAGE` 标签重建 manager，并重建已有用户容器；仅更新 Web 无法启用旧 Runtime 中不存在的接口。
 
 ## MCP 连接
 
@@ -200,10 +210,13 @@ docker compose config --quiet
 docker compose build
 docker compose up -d
 pnpm test:integration
+pnpm test:files
 ```
 
 Drizzle migrations 随项目提交，平台服务启动时使用 PostgreSQL advisory lock 串行应用。修改 schema 后运行 `pnpm db:generate`，应用使用 `DATABASE_URL=... pnpm db:migrate`。开发时不要复用其他项目的数据库或 Redis。
 
 集成测试会创建两个独立测试用户和三个 Workspace，验证鉴权、所有权、容器复用/隔离、文件 CRUD、路径穿越拒绝、Runtime 停止/移除后数据存续、SSE 终态与 Stop 端点。结果保存在被忽略的 `artifacts/integration.json`。测试会留下这些专属测试账号和用户目录，方便检查数据持久性；不会删除其他用户资料。配置真实 Key 后使用 `EXPECT_LLM_SUCCESS=1 pnpm test:integration`，额外要求实际工具执行、文件产物与文字增量成功。
+
+`pnpm test:files` 通过真实公共 API 验证二进制完整性、100 MiB 边界、目录 ZIP/空目录、冲突处理、取消清理、预览签名和用户隔离；创建两个专属账号和一个 Workspace，保留约 112 MiB 测试文件以及 `artifacts/file-transfer-integration.json`。不需要调用模型。
 
 最终实际运行验证结果见 `VERIFICATION.md`；未配置模型凭证时不能声称真实模型调用已成功。

@@ -6,12 +6,16 @@ import type { AgentRuntime } from '@cloud-work/runtime-core';
 import { DshRuntime, parseMcpRunSnapshot } from '@cloud-work/runtime-dsh';
 import { workspacePath, validateId, listFiles, readFileContent, writeFileContent, makeDirectory, renameEntry, deleteEntry } from '@cloud-work/workspace';
 import { verifySandbox } from './sandbox.ts';
+import { WorkspaceFileTransfers } from './file-transfer.ts';
+import { FILE_TRANSFER_LIMITS } from '@cloud-work/protocol';
+import { FileTransferError } from '@cloud-work/workspace';
 
 const token = process.env.RUNTIME_TOKEN;
 if (!token || token.length < 32) throw new Error('RUNTIME_TOKEN must contain at least 32 characters');
 const tokenBytes = Buffer.from(`Bearer ${token}`);
 const sandbox = verifySandbox();
 const runtime: AgentRuntime = new DshRuntime();
+const fileTransfers = new WorkspaceFileTransfers();
 const sessionWorkspaces = new Map<string, string>();
 const active = new Set<string>();
 const operations = new Map<string, Promise<void>>();
@@ -28,13 +32,13 @@ function textField(body: Record<string, unknown>, key: string): string {
   if (typeof body[key] !== 'string') throw new Error(`${key} must be a string`);
   return body[key];
 }
-async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(req: IncomingMessage, maxBytes = 3 * 1024 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of req) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     length += bytes.length;
-    if (length > 3 * 1024 * 1024) throw new Error('Request body exceeds 3 MiB');
+    if (length > maxBytes) throw new FileTransferError('Request body exceeds its size limit', 413);
     chunks.push(bytes);
   }
   const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
@@ -47,6 +51,7 @@ function authorized(req: IncomingMessage): boolean {
 }
 
 const server = createServer(async (req, res) => {
+  req.setTimeout(30_000);
   try {
     if (!authorized(req)) return json(res, 401, { error: 'Unauthorized' });
     const url = new URL(req.url ?? '/', 'http://runtime');
@@ -66,6 +71,7 @@ const server = createServer(async (req, res) => {
         if ([...active].some(sessionId => sessionWorkspaces.get(sessionId) === id)) return json(res, 409, { error: 'Workspace has an active agent run' });
         deletingWorkspaces.add(id);
         try {
+          await fileTransfers.cancelWorkspace(root);
           for (const [sessionId, workspaceId] of sessionWorkspaces) if (workspaceId === id) {
             await runtime.destroySession(sessionId);
             sessionWorkspaces.delete(sessionId);
@@ -74,11 +80,13 @@ const server = createServer(async (req, res) => {
         } finally { deletingWorkspaces.delete(id); }
         return json(res, 200, { ok: true });
       }
-      if (segments[2] === 'files' && segments.length <= 4) {
+      if (segments[2] === 'files' && segments.length <= 5) {
+        if (await fileTransfers.handle(req, res, root, segments, url)) return;
         const relative = url.searchParams.get('path') ?? '';
         if (segments[3] === 'content' && method === 'GET') return json(res, 200, { content: await readFileContent(root, relative) });
         if (segments[3] === 'content' && method === 'PUT') {
-          const payload = await body(req);
+          // A JSON string can expand each content byte to six escaped characters.
+          const payload = await body(req, FILE_TRANSFER_LIMITS.maxTextBytes * 6 + 65536);
           await writeFileContent(root, textField(payload, 'path'), textField(payload, 'content'));
           return json(res, 200, { ok: true });
         }
@@ -163,12 +171,14 @@ const server = createServer(async (req, res) => {
     }
     json(res, 404, { error: 'Not found' });
   } catch (error) {
-    if (res.headersSent) return res.end();
+    if (res.headersSent) return res.destroy();
+    if (res.destroyed) return;
     const code = (error as NodeJS.ErrnoException).code;
-    json(res, code === 'ENOENT' ? 404 : 400, { error: error instanceof Error ? error.message : 'Request failed' });
+    if (!req.complete) res.setHeader('connection', 'close');
+    json(res, error instanceof FileTransferError ? error.status : code === 'ENOENT' ? 404 : 400, { error: error instanceof Error ? error.message : 'Request failed' });
   }
 });
-server.requestTimeout = 30_000;
+server.requestTimeout = FILE_TRANSFER_LIMITS.timeoutMs;
 server.headersTimeout = 15_000;
 server.listen(3080, '0.0.0.0', () => console.log(`Runtime ready on 3080; sandbox=${sandbox.backend}/${sandbox.enforcement}`));
 let shuttingDown = false;
@@ -176,6 +186,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   server.close();
+  await fileTransfers.close();
   await Promise.allSettled([...sessionWorkspaces.keys()].map(id => runtime.destroySession(id)));
   await Promise.allSettled(operations.values());
   server.closeAllConnections();

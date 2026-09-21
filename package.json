@@ -10,11 +10,12 @@
     "dev": "pnpm --filter @cloud-work/web dev",
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r build",
-    "test": "tsx --test tests/*.test.ts apps/web/server/mcp.test.ts && pnpm --filter @cloud-work/runtime-manager test && pnpm --filter @cloud-work/runtime-dsh test && pnpm --filter @cloud-work/mcp-gateway test",
+    "test": "tsx --test tests/*.test.ts apps/web/server/*.test.ts apps/web/components/file-transfer.test.ts && pnpm --filter @cloud-work/runtime-manager test && pnpm --filter @cloud-work/runtime-dsh test && pnpm --filter @cloud-work/mcp-gateway test",
     "db:generate": "pnpm --filter @cloud-work/database generate",
     "db:migrate": "pnpm --filter @cloud-work/database migrate",
     "test:integration": "tsx scripts/integration.ts",
-    "test:mcp": "tsx scripts/mcp-integration.ts"
+    "test:mcp": "tsx scripts/mcp-integration.ts",
+    "test:files": "tsx scripts/file-transfer-integration.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.13",

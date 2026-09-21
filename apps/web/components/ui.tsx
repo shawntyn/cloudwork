@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { api, errorMessage, type User, type Runtime } from "./client";
-export type IconName = "logo" | "plus" | "arrow" | "folder" | "file" | "chevron" | "close" | "refresh" | "trash" | "edit" | "save" | "stop" | "power" | "logout" | "code" | "check" | "terminal" | "alert" | "menu" | "message" | "plug";
+export type IconName = "logo" | "plus" | "arrow" | "folder" | "file" | "chevron" | "close" | "refresh" | "trash" | "edit" | "save" | "stop" | "power" | "logout" | "code" | "check" | "terminal" | "alert" | "menu" | "message" | "plug" | "upload" | "download";
 const paths: Record<IconName, React.ReactNode> = {
     logo: <><path d="m12 3 9 5v8l-9 5-9-5V8l9-5Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5v3"/></>,
     plus: <path d="M12 5v14M5 12h14"/>, arrow: <path d="M5 12h14m-6-6 6 6-6 6"/>,
@@ -22,6 +22,8 @@ const paths: Record<IconName, React.ReactNode> = {
     menu: <path d="M4 6h16M4 12h16M4 18h16"/>,
     message: <path d="M3 3h18v14H9l-6 4V3Z"/>,
     plug: <><path d="M8 2v6m8-6v6M5 8h14v3a7 7 0 0 1-14 0V8ZM12 18v4"/></>,
+    upload: <><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></>,
+    download: <><path d="M12 3v13m-5-5 5 5 5-5M4 18v3h16v-3"/></>,
 };
 export function Icon({ name, size = 18, className = "" }: {
     name: IconName;

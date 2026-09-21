@@ -8,6 +8,20 @@ export type AgentEvent =
   | { type: 'user-message'; text: string };
 export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink'; size: number };
 
+export const FILE_TRANSFER_LIMITS = {
+  maxFileBytes: 100 * 1024 * 1024,
+  maxBatchBytes: 1024 * 1024 * 1024,
+  maxEntries: 5000,
+  maxTextBytes: 10 * 1024 * 1024,
+  maxImagePreviewBytes: 20 * 1024 * 1024,
+  timeoutMs: 15 * 60 * 1000,
+} as const;
+export type FileUploadManifest = {
+  files: Array<{ path: string; size: number }>;
+  directories?: string[];
+};
+export type FileUploadConflict = 'error' | 'replace' | 'rename';
+
 export type McpAuthType = 'none' | 'bearer' | 'headers';
 export type McpToolSummary = { name: string; description?: string };
 export type McpConnectionSummary = {

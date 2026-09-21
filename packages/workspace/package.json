@@ -11,6 +11,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloud-work/protocol": "workspace:*"
+    "@cloud-work/protocol": "workspace:*",
+    "fflate": "0.8.3"
   }
 }

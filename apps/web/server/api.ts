@@ -13,16 +13,16 @@ export async function currentUser(request: Request) {
   if (!session) throw new ApiError(401, 'Please sign in to continue');
   return session.user;
 }
-export function safeOrigin(request: Request) {
+export function safeOrigin(request: Request, contentType = 'application/json') {
   if (['GET','HEAD','OPTIONS'].includes(request.method)) return;
   const origin = request.headers.get('origin');
   const expected = new URL(process.env.BETTER_AUTH_URL ?? 'http://localhost:3000').origin;
   if (origin && origin !== expected) throw new ApiError(403, 'Request origin is not allowed');
-  if (request.headers.get('content-type') && !request.headers.get('content-type')!.startsWith('application/json')) throw new ApiError(415, 'Use application/json');
+  if (request.headers.get('content-type') && request.headers.get('content-type')!.split(';')[0]!.trim().toLowerCase() !== contentType) throw new ApiError(415, `Use ${contentType}`);
 }
-export function api(fn: (request: Request) => Promise<Response>) {
+export function api(fn: (request: Request) => Promise<Response>, options: { contentType?: string } = {}) {
   return async (request: Request) => {
-    try { safeOrigin(request); return await fn(request); }
+    try { safeOrigin(request, options.contentType); return await fn(request); }
     catch (error) {
       if (error instanceof ApiError) return Response.json({ error: error.message }, { status: error.status });
       if (error instanceof ZodError || error instanceof SyntaxError) return Response.json({ error: 'Invalid request data' }, { status: 400 });
@@ -31,8 +31,7 @@ export function api(fn: (request: Request) => Promise<Response>) {
     }
   };
 }
-export async function body(request: Request) {
-  const limit = 3 * 1024 * 1024;
+export async function body(request: Request, limit = 3 * 1024 * 1024) {
   if (Number(request.headers.get('content-length')) > limit) throw new ApiError(413, 'Request is too large');
   if (!request.body) throw new ApiError(400, 'JSON body is required');
   const reader = request.body.getReader();
