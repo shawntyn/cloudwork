@@ -7,7 +7,7 @@ import { bindingInput, connectionInput, connectionPatch, parse, runInput } from 
 const key = encryptionKey('ab'.repeat(32));
 const headers = { Authorization: 'Bearer upstream-private-test-key', 'X-Api-Key': 'other-upstream-test-key' };
 const context = secretContext('user_a', 'mcp_a', 1);
-const connection = { name: 'Fixture', url: 'https://mcp.example/mcp', authType: 'bearer' as const, token: 'upstream-private-test-key' };
+const connection = { serverName: 'fixture', name: 'Fixture', url: 'https://mcp.example/mcp', authType: 'bearer' as const, token: 'upstream-private-test-key' };
 
 test('credentials are randomized authenticated ciphertext scoped to user, connection, and revision', () => {
   const first = encryptSecret(headers, context, key);
@@ -116,17 +116,34 @@ test('IPv4-mapped literal resolution returns the matching normalized socket fami
 
 test('connection validation rejects unknown capabilities, reserved headers and duplicate header casing', () => {
   assert.deepEqual(parse(connectionInput, connection), connection);
-  for (const field of ['transport', 'command', 'args', 'env', 'plugins', 'serverName', 'userId']) assert.throws(() => parse(connectionInput, { ...connection, [field]: 'untrusted' }), GatewayError);
+  for (const field of ['transport', 'command', 'args', 'env', 'plugins', 'userId']) assert.throws(() => parse(connectionInput, { ...connection, [field]: 'untrusted' }), GatewayError);
   for (const header of ['Host', 'Connection', 'Content-Length', 'Transfer-Encoding', 'Cookie', 'Set-Cookie', 'Proxy-Authorization', 'Forwarded', 'X-Forwarded-For', 'Accept', 'Content-Type', 'Mcp-Session-Id', 'Origin', 'Referer', 'Upgrade', 'TE', 'Trailer']) {
-    assert.throws(() => parse(connectionInput, { name: 'Fixture', url: connection.url, authType: 'headers', headers: { [header]: 'value' } }), GatewayError, header);
+    assert.throws(() => parse(connectionInput, { serverName: 'fixture', url: connection.url, authType: 'headers', headers: { [header]: 'value' } }), GatewayError, header);
   }
   for (const supplied of [{}, { Authorization: 'a', authorization: 'b' }, { 'X-Key': 'line\nbreak' }, Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`X-Key-${index}`, 'value']))]) {
-    assert.throws(() => parse(connectionInput, { name: 'Fixture', url: connection.url, authType: 'headers', headers: supplied }));
+    assert.throws(() => parse(connectionInput, { serverName: 'fixture', url: connection.url, authType: 'headers', headers: supplied }));
   }
-  assert.equal(parse(connectionInput, { name: 'Fixture', url: connection.url, authType: 'headers', headers: { 'X-Api-Key': 'value' } }).authType, 'headers');
+  assert.equal(parse(connectionInput, { serverName: 'fixture', url: connection.url, authType: 'headers', headers: { 'X-Api-Key': 'value' } }).authType, 'headers');
   assert.throws(() => parse(connectionPatch, {}));
   assert.throws(() => parse(connectionPatch, { command: 'node' }));
   assert.deepEqual(parse(connectionPatch, { enabled: false }), { enabled: false });
+});
+
+test('callable aliases are required, bounded and immutable while display names are optional', () => {
+  const { name: _displayName, ...withoutDisplayName } = connection;
+  assert.deepEqual(parse(connectionInput, withoutDisplayName), withoutDisplayName);
+  for (const alias of ['a', '0', '_', 'sales_prod_2', 'a'.repeat(24)]) {
+    assert.equal(parse(connectionInput, { ...connection, serverName: alias }).serverName, alias);
+  }
+  for (const alias of [undefined, null, '', 'Sales', 'sales-prod', 'sales.prod', 'sales prod', 'sales\nprod', 'sales_prod ', '销售', 'a'.repeat(25)]) {
+    assert.throws(() => parse(connectionInput, { ...connection, serverName: alias }), GatewayError);
+  }
+  for (const name of ['', '   ']) assert.equal(parse(connectionInput, { ...connection, name }).name, '');
+  assert.equal(parse(connectionInput, { ...connection, name: ' 销售数据库 ' }).name, '销售数据库');
+  for (const name of [null, 'x'.repeat(101), 'sales\nprod', 'sales\0prod']) assert.throws(() => parse(connectionInput, { ...connection, name }), GatewayError);
+  assert.deepEqual(parse(connectionPatch, { name: '   ' }), { name: '' });
+  assert.deepEqual(parse(connectionPatch, { name: ' New display name ' }), { name: 'New display name' });
+  for (const serverName of ['sales_prod', connection.serverName]) assert.throws(() => parse(connectionPatch, { name: 'Renamed', serverName }), GatewayError);
 });
 
 test('workspace bindings and run requests reject duplicates, excess entries and unowned input fields', () => {

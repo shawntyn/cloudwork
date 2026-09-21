@@ -15,14 +15,17 @@ const headers = z.record(headerName, credential).refine(value => {
 });
 const secret = z.preprocess(value => typeof value === 'string' && !value.trim() ? undefined : value, credential.optional());
 const fields = {
-  name: z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/),
+  name: z.string().trim().max(100).regex(/^[^\x00-\x1f\x7f]*$/).optional(),
   url: connectionUrl,
   authType,
   token: secret,
   headers: headers.optional(),
   enabled: z.boolean().optional(),
 };
-export const createConnectionSchema = z.object(fields).strict().superRefine((value, context) => {
+export const createConnectionSchema = z.object({
+  ...fields,
+  serverName: z.string().trim().regex(/^[a-z0-9_]{1,24}$/, 'Name must use 1–24 lowercase letters, digits or underscores'),
+}).strict().superRefine((value, context) => {
   if (value.authType === 'bearer' && !value.token) context.addIssue({ code: 'custom', message: 'Bearer token is required', path: ['token'] });
   if (value.authType === 'headers' && !value.headers) context.addIssue({ code: 'custom', message: 'Headers are required', path: ['headers'] });
 });

@@ -64,8 +64,31 @@ test('real PostgreSQL MCP store enforces tenant ownership, encrypted snapshots a
       { id: sessionB, userId: userB, workspaceId: workspaceB, dshSessionId: dshB },
     ]);
 
-    const connection = await store.create(userA, { name: 'Credential fixture', url: endpoint, authType: 'bearer', token: oldSecret });
-    const foreign = await store.create(userB, { name: 'Foreign fixture', url: endpoint, authType: 'none' });
+    const connection = await store.create(userA, { serverName: 'sales_prod', name: ' Credential fixture ', url: endpoint, authType: 'bearer', token: oldSecret });
+    const foreign = await store.create(userB, { serverName: 'sales_prod', url: endpoint, authType: 'none' });
+    assert.equal(connection.serverName, 'sales_prod');
+    assert.equal(connection.name, 'Credential fixture');
+    assert.match(connection.id, /^mcp_[a-f0-9-]{36}$/);
+    assert.notEqual(connection.id, connection.serverName);
+    assert.equal(foreign.serverName, connection.serverName, 'aliases are scoped to each user');
+    assert.equal(foreign.name, '', 'omitted display names remain empty for the UI fallback');
+    await assert.rejects(store.create(userA, { serverName: 'sales_prod', name: 'Different display name', url: endpoint, authType: 'none' }), error => error instanceof GatewayError && error.statusCode === 409 && error.message.includes('name already exists'));
+    const concurrent = await Promise.allSettled(Array.from({ length: 2 }, () => store.create(userA, { serverName: 'sales_test', name: '   ', url: endpoint, authType: 'none' })));
+    assert.equal(concurrent.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = concurrent.find(result => result.status === 'rejected');
+    assert.ok(rejected?.status === 'rejected' && rejected.reason instanceof GatewayError && rejected.reason.statusCode === 409, 'concurrent duplicate creation returns a conflict');
+    const blankDisplayName = concurrent.find(result => result.status === 'fulfilled');
+    assert.ok(blankDisplayName?.status === 'fulfilled');
+    assert.equal(blankDisplayName.value.name, '');
+    assert.equal((await store.update(userA, blankDisplayName.value.id, { name: 'Temporary label' })).serverName, 'sales_test');
+    assert.equal((await store.update(userA, blankDisplayName.value.id, { name: '   ' })).name, '');
+    await store.remove(userA, blankDisplayName.value.id);
+    const legacyId = `mcp_${randomUUID()}`;
+    await db.insert(mcpConnections).values({ id: legacyId, userId: userA, name: 'Legacy display name', serverName: 'legacy-server-with-old-name', url: endpoint, authType: 'none' });
+    const legacy = await store.update(userA, legacyId, { name: '' });
+    assert.equal(legacy.serverName, 'legacy-server-with-old-name', 'older aliases remain valid when editing other fields');
+    assert.equal(legacy.name, '');
+    await store.remove(userA, legacyId);
     assert.equal(connection.hasSecret, true);
     assert.equal(foreign.hasSecret, false);
     const stored = await store.connection(userA, connection.id);
@@ -91,13 +114,21 @@ test('real PostgreSQL MCP store enforces tenant ownership, encrypted snapshots a
     await rejectsStatus(store.issue(userA, original.run, workspaceA, dshA), 409);
     await rejectsStatus(store.authorize(original.id, 'invalid-grant-token'), 401);
     const originalGrant = await store.authorize(original.id, original.entry.token);
+    assert.equal(original.entry.id, connection.id);
+    assert.equal(original.entry.serverName, 'sales_prod');
+    assert.equal(originalGrant.connectionId, connection.id);
+    assert.equal(originalGrant.serverName, 'sales_prod');
     assert.equal(originalGrant.sessionId, sessionA);
     assert.equal(originalGrant.userId, userA);
     assert.equal(originalGrant.tokenHash.includes(original.entry.token), false);
     assert.equal(JSON.stringify(original.entry).includes(oldSecret), false);
 
+    await rejectsStatus(store.update(userA, connection.id, { serverName: 'sales_test' }), 400);
+    assert.equal((await store.connection(userA, connection.id)).revision, 1, 'an attempted alias change must not mutate the connection');
     const renamed = await store.update(userA, connection.id, { name: 'Renamed fixture' });
     assert.equal(renamed.revision, 2);
+    assert.equal(renamed.serverName, 'sales_prod');
+    assert.equal(renamed.id, connection.id);
     assert.deepEqual(store.headers(await store.connection(userA, connection.id)), { Authorization: `Bearer ${oldSecret}` });
     const changed = await store.update(userA, connection.id, { token: newSecret, url: endpoint + '-changed' });
     assert.equal(changed.revision, 3);
@@ -109,6 +140,7 @@ test('real PostgreSQL MCP store enforces tenant ownership, encrypted snapshots a
     const replacement = await issue();
     const replacementGrant = await store.authorize(replacement.id, replacement.entry.token);
     assert.equal(replacementGrant.revision, 3);
+    assert.equal(replacement.entry.serverName, 'sales_prod');
     assert.deepEqual(store.grantHeaders(replacementGrant), { Authorization: `Bearer ${newSecret}` });
     // A stale connection test must not overwrite metadata for a newer revision.
     await store.testResult(stored, [{ name: 'stale_tool' }], null);

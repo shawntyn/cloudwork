@@ -11,13 +11,17 @@ export type FileEntry = { name: string; path: string; type: 'file' | 'directory'
 export type McpAuthType = 'none' | 'bearer' | 'headers';
 export type McpToolSummary = { name: string; description?: string };
 export type McpConnectionSummary = {
+  /** name is the optional display label; use serverName when it is empty. */
   id: string; name: string; serverName: string; url: string; transport: 'streamable-http';
   authType: McpAuthType; hasSecret: boolean; enabled: boolean; revision: number;
   tools: McpToolSummary[]; lastTestStatus: 'never' | 'ok' | 'error';
   lastTestError: string | null; lastTestAt: string | null; createdAt: string; updatedAt: string;
 };
 export type McpConnectionInput = {
-  name: string; url: string; authType: McpAuthType; token?: string;
+  /** Stable callable name (1–24 lowercase letters, digits or underscores). */
+  serverName: string;
+  /** Optional display label; an empty string falls back to serverName. */
+  name?: string; url: string; authType: McpAuthType; token?: string;
   headers?: Record<string, string>; enabled?: boolean;
 };
 export type McpConnectionList = { connections: McpConnectionSummary[]; policy: { allowedOrigins: string[] } };

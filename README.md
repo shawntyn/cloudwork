@@ -63,7 +63,9 @@ tests/                 文件边界测试
 
 更新配置后运行 `docker compose up -d --build`。每次出站连接都会验证并固定 DNS 解析地址，禁止重定向；连接 URL 不接受内嵌凭据、query 或 fragment。内网服务 IP 改变时，维护者需重新核实并更新白名单。
 
-登录后从页头连接图标进入 **MCP connections**（`/settings/mcp`），点击 **Add connection**，填写名称、完整 endpoint URL 和认证信息，保存后点击 **Test connection** 查看连接状态及工具列表。已存凭据只显示 **Configured**；编辑时留空保留原值，填写自定义 headers 会替换整组旧 headers。进入 Workspace，点击工具栏 **Connections**，选择连接并保存。连接必须同时全局启用并绑定到该 Workspace，Agent 才能使用。
+登录后从页头连接图标进入 **MCP connections**（`/settings/mcp`），点击 **Add connection**，填写必填的 **Name**、可选的 **Display name**、完整 endpoint URL 和认证信息。Name 只允许小写字母、数字、下划线，共 1–24 字符，同一用户下唯一，创建后不可修改；例如 `sales_prod` 会生成工具名 `mcp__sales_prod__execute_sql`。Display name 支持中文，留空或清空时显示 Name。旧连接保留已有调用标识、凭据和绑定，无需数据库迁移。API 沿用现有字段：`serverName` 是必填调用标识，`name` 是可选显示名称；PATCH 不接受 `serverName`。
+
+保存后点击 **Test connection** 查看连接状态及工具列表。已存凭据只显示 **Configured**；编辑时留空保留原值，填写自定义 headers 会替换整组旧 headers。进入 Workspace，点击工具栏 **Connections**，选择连接并保存。连接必须同时全局启用并绑定到该 Workspace，Agent 才能使用。
 
 每条新消息创建一份连接配置快照，编辑连接或新增绑定在下一轮生效。禁用、删除或解除绑定会撤销对应运行授权，后续调用不能继续使用；已经由上游完成的操作不会被撤回。上游凭据仅由 gateway 解密和使用，以加密形式保存在 PostgreSQL；Web 公共 API 不回传秘密，用户 Runtime 只获得短期、限定当前运行的 gateway 授权。用户代码沙箱继续断网，MCP 并不为 Bash、Python 或 Node 开放网络。gateway 不挂载 Docker socket，仍只有 manager 管理 Docker。
 

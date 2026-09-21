@@ -9,7 +9,7 @@ import {
 } from './mcp';
 
 test('MCP requests reject transport overrides, unsafe URLs and header injection', () => {
-  const valid = { name: 'Team tools', url: 'https://tools.example/mcp', authType: 'none' };
+  const valid = { serverName: 'team_tools', name: 'Team tools', url: 'https://tools.example/mcp', authType: 'none' };
   assert.equal(createConnectionSchema.safeParse(valid).success, true);
   for (const change of [
     { command: 'node server.js' },
@@ -27,7 +27,7 @@ test('MCP requests reject transport overrides, unsafe URLs and header injection'
 });
 
 test('MCP input limits match gateway limits', () => {
-  const valid = { name: 'Team tools', url: 'https://tools.example/mcp', authType: 'bearer' };
+  const valid = { serverName: 'team_tools', name: 'Team tools', url: 'https://tools.example/mcp', authType: 'bearer' };
   assert.equal(createConnectionSchema.safeParse({ ...valid, token: 'x'.repeat(4096) }).success, true);
   assert.equal(createConnectionSchema.safeParse({ ...valid, token: 'x'.repeat(4097) }).success, false);
   const headers = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`X-Header-${index}`, 'value']));
@@ -37,6 +37,24 @@ test('MCP input limits match gateway limits', () => {
   const connectionIds = Array.from({ length: 17 }, (_, index) => `mcp_${index}`);
   assert.equal(workspaceMcpSchema.safeParse({ connectionIds }).success, false);
   assert.equal(workspaceMcpSchema.safeParse({ connectionIds: connectionIds.slice(0, 16) }).success, true);
+});
+
+test('MCP callable names are required, bounded and immutable; display names can be omitted or cleared', () => {
+  const valid = { serverName: 'sales_prod', url: 'https://tools.example/mcp', authType: 'none' };
+  assert.equal(createConnectionSchema.parse(valid).name, undefined);
+  assert.equal(createConnectionSchema.parse({ ...valid, name: '   ' }).name, '');
+  assert.equal(createConnectionSchema.parse({ ...valid, name: '  销售数据库  ' }).name, '销售数据库');
+  for (const serverName of ['a', '1', '_', 'a'.repeat(24)]) {
+    assert.equal(createConnectionSchema.safeParse({ ...valid, serverName }).success, true);
+  }
+  for (const serverName of [undefined, '', '   ', 'Sales', 'sales-prod', 'sales.prod', 'sales prod', '销售', 'a'.repeat(25), 'sales\nprod']) {
+    assert.equal(createConnectionSchema.safeParse({ ...valid, serverName }).success, false, String(serverName));
+  }
+  for (const name of ['a'.repeat(101), 'bad\u0000label', 'bad\nlabel']) {
+    assert.equal(createConnectionSchema.safeParse({ ...valid, name }).success, false);
+  }
+  assert.deepEqual(updateConnectionSchema.parse({ name: '   ' }), { name: '' });
+  assert.equal(updateConnectionSchema.safeParse({ serverName: 'new_alias' }).success, false);
 });
 
 test('blank edited credentials are omitted so existing secrets survive', () => {

@@ -19,12 +19,12 @@ const other = await request('/api/auth/sign-up/email', '', 'POST', { email: `mcp
 const otherCookie = other.response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
 await request('/api/mcp/connections', '', 'GET', undefined, 401);
 const available = (await request('/api/mcp/connections', cookie)).value.connections;
-const connection = available.find((item: { name: string; url: string }) => item.name === 'Local MCP verification' && item.url === fixture)
-  ?? (await request('/api/mcp/connections', cookie, 'POST', { name: 'Local MCP verification', url: fixture, authType: 'bearer', token }, 201)).value.connection;
+const connection = available.find((item: { serverName: string; url: string }) => item.serverName === 'local_verification' && item.url === fixture)
+  ?? (await request('/api/mcp/connections', cookie, 'POST', { serverName: 'local_verification', name: 'Local MCP verification', url: fixture, authType: 'bearer', token }, 201)).value.connection;
 assert.equal(connection.hasSecret, true);
 await request(`/api/mcp/connections/${connection.id}`, otherCookie, 'GET', undefined, 404);
 await request(`/api/mcp/connections/${connection.id}`, otherCookie, 'PATCH', { enabled: false }, 404);
-await request('/api/mcp/connections', cookie, 'POST', { name: 'Blocked', url: 'http://127.0.0.1:4100/mcp', authType: 'none' }, 400);
+await request('/api/mcp/connections', cookie, 'POST', { serverName: 'blocked', name: 'Blocked', url: 'http://127.0.0.1:4100/mcp', authType: 'none' }, 400);
 assert.deepEqual((await request('/api/mcp/connections', otherCookie)).value.connections, []);
 pass('Authenticated CRUD, secret-free responses, cross-user isolation and destination policy');
 const tested = (await request(`/api/mcp/connections/${connection.id}/test`, cookie, 'POST')).value.connection;

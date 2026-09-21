@@ -55,19 +55,21 @@ export class Store {
     const url = this.policy.url(input.url).href;
     const headers = this.credentials(input, input.authType);
     return this.locked(userId, async tx => {
-      const owned = await tx.select({ id: mcpConnections.id }).from(mcpConnections).where(eq(mcpConnections.userId, userId));
+      const owned = await tx.select({ id: mcpConnections.id, serverName: mcpConnections.serverName }).from(mcpConnections).where(eq(mcpConnections.userId, userId));
+      if (owned.some(row => row.serverName === input.serverName)) throw new GatewayError(409, 'An MCP connection with this name already exists');
       if (owned.length >= 32) throw new GatewayError(409, 'Maximum 32 MCP connections per user');
       const id = `mcp_${randomUUID()}`, revision = 1;
-      const [row] = await tx.insert(mcpConnections).values({ id, userId, name: input.name, serverName: `mcp_${randomBytes(10).toString('hex')}`, url, authType: input.authType, enabled: input.enabled ?? true, secretCiphertext: Object.keys(headers).length ? encryptSecret(headers, secretContext(userId, id, revision), this.key) : null }).returning();
+      const [row] = await tx.insert(mcpConnections).values({ id, userId, name: input.name?.trim() ?? '', serverName: input.serverName, url, authType: input.authType, enabled: input.enabled ?? true, secretCiphertext: Object.keys(headers).length ? encryptSecret(headers, secretContext(userId, id, revision), this.key) : null }).returning();
       return summary(row!);
     });
   }
   async update(userId: string, id: string, input: Partial<McpConnectionInput>) {
     const result = await this.locked(userId, async tx => {
       const old = await this.connection(userId, id, tx);
+      if (input.serverName !== undefined && input.serverName !== old.serverName) throw new GatewayError(400, 'MCP connection name cannot be changed after creation');
       const authType = input.authType ?? old.authType as McpAuthType;
       const headers = this.credentials(input, authType, old), revision = old.revision + 1;
-      const [row] = await tx.update(mcpConnections).set({ name: input.name ?? old.name, url: this.policy.url(input.url ?? old.url).href, authType, enabled: input.enabled ?? old.enabled, revision, secretCiphertext: Object.keys(headers).length ? encryptSecret(headers, secretContext(userId, id, revision), this.key) : null, tools: [], lastTestStatus: 'never', lastTestAt: null, lastTestError: null, updatedAt: new Date() }).where(eq(mcpConnections.id, id)).returning();
+      const [row] = await tx.update(mcpConnections).set({ name: input.name?.trim() ?? old.name, url: this.policy.url(input.url ?? old.url).href, authType, enabled: input.enabled ?? old.enabled, revision, secretCiphertext: Object.keys(headers).length ? encryptSecret(headers, secretContext(userId, id, revision), this.key) : null, tools: [], lastTestStatus: 'never', lastTestAt: null, lastTestError: null, updatedAt: new Date() }).where(eq(mcpConnections.id, id)).returning();
       const revoked = !row!.enabled ? await tx.delete(mcpRunGrants).where(eq(mcpRunGrants.connectionId, id)).returning({ id: mcpRunGrants.id }) : [];
       return { row: row!, ids: revoked.map(r => r.id) };
     });

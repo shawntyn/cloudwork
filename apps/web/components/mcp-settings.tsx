@@ -9,6 +9,10 @@ type ConnectionsResponse = McpConnectionList;
 type ConnectionResponse = { connection: McpConnectionSummary };
 const authLabels = { none: "No authentication", bearer: "Bearer token", headers: "Custom headers" };
 
+export function mcpConnectionLabel(connection: Pick<McpConnectionSummary, "name" | "serverName">) {
+    return connection.name.trim() || connection.serverName;
+}
+
 export function McpTestStatus({ connection }: { connection: McpConnectionSummary }) {
     const text = connection.lastTestStatus === "ok" ? "Connected" : connection.lastTestStatus === "error" ? "Test failed" : "Not tested";
     return <span className={`mcp-test-status mcp-test-${connection.lastTestStatus}`}><span className="status-dot"/>{text}</span>;
@@ -58,11 +62,11 @@ export function McpSettings() {
                 await api(url, { method: "DELETE" });
                 setConnections(current => current.filter(item => item.id !== connection.id));
                 setDeleting(null);
-                setNotice(`“${connection.name}” was deleted.`);
+                setNotice(`“${mcpConnectionLabel(connection)}” was deleted.`);
             } else {
                 const result = await api<ConnectionResponse>(kind === "test" ? `${url}/test` : url, kind === "test" ? { method: "POST" } : { method: "PATCH", body: JSON.stringify({ enabled: !connection.enabled }) });
                 replace(result.connection);
-                setNotice(kind === "test" ? result.connection.lastTestStatus === "ok" ? `Connected to ${result.connection.name}. Found ${result.connection.tools.length} tools.` : `The test for ${connection.name} failed. See the connection for details.` : `“${connection.name}” is now ${result.connection.enabled ? "enabled" : "disabled"}.`);
+                setNotice(kind === "test" ? result.connection.lastTestStatus === "ok" ? `Connected to ${mcpConnectionLabel(result.connection)}. Found ${result.connection.tools.length} tools.` : `The test for ${mcpConnectionLabel(connection)} failed. See the connection for details.` : `“${mcpConnectionLabel(connection)}” is now ${result.connection.enabled ? "enabled" : "disabled"}.`);
             }
         } catch (error) {
             setActionError(errorMessage(error));
@@ -85,22 +89,23 @@ export function McpSettings() {
             <div className="mcp-notice" role="status">{notice || (connections.length >= 32 ? "You have reached the limit of 32 connections. Delete a connection before adding another." : "")}</div>
             <section className="mcp-connections" aria-label="MCP connections" aria-busy={loading}>
                 {loading ? <div className="empty-state"><span className="spinner"/><p>Loading connections…</p></div> : !loadError && connections.length === 0 ? <div className="empty-state mcp-empty"><span className="empty-icon"><Icon name="plug" size={30}/></span><h2>Your tools, connected</h2><p>Add an HTTP MCP server to make its tools<br/>available to your workspace agent.</p><button className="button button-secondary" disabled={origins.length === 0} onClick={() => setEditing("new")}><Icon name="plus"/>Add your first connection</button></div> : connections.map(connection => <article className="mcp-card" key={connection.id}>
-                    <div className="mcp-card-top"><div className="mcp-card-identity"><span className="workspace-icon color-0"><Icon name="plug" size={23}/></span><div><h2>{connection.name}</h2><p className="small muted">{connection.serverName || "MCP server"}</p></div></div><button className={`mcp-enable ${connection.enabled ? "is-enabled" : ""}`} role="switch" aria-checked={connection.enabled} aria-label={`Enable ${connection.name}`} disabled={!!busy} onClick={() => { void action(connection, "toggle"); }}><span className="mcp-switch-track"><span/></span>{connection.enabled ? "Enabled" : "Disabled"}</button></div>
+                    <div className="mcp-card-top"><div className="mcp-card-identity"><span className="workspace-icon color-0"><Icon name="plug" size={23}/></span><div><h2>{mcpConnectionLabel(connection)}</h2><p className="small muted">{connection.serverName || "MCP server"}</p></div></div><button className={`mcp-enable ${connection.enabled ? "is-enabled" : ""}`} role="switch" aria-checked={connection.enabled} aria-label={`Enable ${mcpConnectionLabel(connection)}`} disabled={!!busy} onClick={() => { void action(connection, "toggle"); }}><span className="mcp-switch-track"><span/></span>{connection.enabled ? "Enabled" : "Disabled"}</button></div>
                     <p className="mcp-url">{connection.url}</p>
                     <div className="mcp-meta"><span>{authLabels[connection.authType]}{connection.authType !== "none" && <span className={connection.hasSecret ? "mcp-configured" : "mcp-missing"}> · {connection.hasSecret ? "Configured" : "Not configured"}</span>}</span><McpTestStatus connection={connection}/>{connection.lastTestAt && <span>Tested {new Date(connection.lastTestAt).toLocaleString()}</span>}</div>
                     {connection.lastTestStatus === "error" && <div className="mcp-test-error"><Icon name="alert" size={16}/><p>{connection.lastTestError || "Connection test failed. Check the server URL and credentials, then test again."}</p></div>}
                     <details className="mcp-tools"><summary><Icon name="chevron" size={14}/><span>{connection.tools.length} discovered {connection.tools.length === 1 ? "tool" : "tools"}</span></summary>{connection.tools.length ? <ul>{connection.tools.map(tool => <li key={tool.name}><code>{tool.name}</code>{tool.description && <p>{tool.description}</p>}</li>)}</ul> : <p className="muted small">{connection.lastTestStatus === "never" ? "Test the connection to discover its tools." : "No tools were discovered. Test again after checking the server."}</p>}</details>
-                    <div className="mcp-card-actions"><button className="button button-secondary button-small" disabled={!!busy} onClick={() => { void action(connection, "test"); }}>{busy?.id === connection.id && busy.action === "test" ? <><span className="spinner"/>Testing…</> : <><Icon name="refresh" size={14}/>Test connection</>}</button><div><button className="button button-small mcp-quiet-button" disabled={!!busy} onClick={() => setEditing(connection)}><Icon name="edit" size={14}/>Edit</button><button className="icon-button danger" aria-label={`Delete ${connection.name}`} disabled={!!busy} onClick={() => { setActionError(""); setDeleting(connection); }}><Icon name="trash" size={16}/></button></div></div>
+                    <div className="mcp-card-actions"><button className="button button-secondary button-small" disabled={!!busy} onClick={() => { void action(connection, "test"); }}>{busy?.id === connection.id && busy.action === "test" ? <><span className="spinner"/>Testing…</> : <><Icon name="refresh" size={14}/>Test connection</>}</button><div><button className="button button-small mcp-quiet-button" disabled={!!busy} onClick={() => setEditing(connection)}><Icon name="edit" size={14}/>Edit</button><button className="icon-button danger" aria-label={`Delete ${mcpConnectionLabel(connection)}`} disabled={!!busy} onClick={() => { setActionError(""); setDeleting(connection); }}><Icon name="trash" size={16}/></button></div></div>
                 </article>)}
             </section>
         </main>
-        {editing && <ConnectionForm key={editing === "new" ? "new" : editing.id} connection={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={connection => { replace(connection); setEditing(null); setNotice(`“${connection.name}” was saved. Test the connection to check its tools.`); }}/>}
-        {deleting && <Modal title="Delete connection?" description={`“${deleting.name}” will be removed from all workspaces. Its saved credentials will be deleted.`} onClose={() => { if (!busy) { setDeleting(null); setActionError(""); } }}>{actionError && <ErrorBanner message={actionError}/>}<div className="modal-actions"><button className="button button-secondary" disabled={!!busy} onClick={() => setDeleting(null)}>Cancel</button><button className="button button-danger" disabled={!!busy} onClick={() => { void action(deleting, "delete"); }}>{busy ? <><span className="spinner"/>Deleting…</> : "Delete connection"}</button></div></Modal>}
+        {editing && <ConnectionForm key={editing === "new" ? "new" : editing.id} connection={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={connection => { replace(connection); setEditing(null); setNotice(`“${mcpConnectionLabel(connection)}” was saved. Test the connection to check its tools.`); }}/>}
+        {deleting && <Modal title="Delete connection?" description={`“${mcpConnectionLabel(deleting)}” will be removed from all workspaces. Its saved credentials will be deleted.`} onClose={() => { if (!busy) { setDeleting(null); setActionError(""); } }}>{actionError && <ErrorBanner message={actionError}/>}<div className="modal-actions"><button className="button button-secondary" disabled={!!busy} onClick={() => setDeleting(null)}>Cancel</button><button className="button button-danger" disabled={!!busy} onClick={() => { void action(deleting, "delete"); }}>{busy ? <><span className="spinner"/>Deleting…</> : "Delete connection"}</button></div></Modal>}
     </div>;
 }
 
 function ConnectionForm({ connection, onClose, onSaved }: { connection: McpConnectionSummary | null; onClose: () => void; onSaved: (connection: McpConnectionSummary) => void }) {
     const [name, setName] = useState(connection?.name || "");
+    const [serverName, setServerName] = useState(connection?.serverName || "");
     const [url, setUrl] = useState(connection?.url || "");
     const [authType, setAuthType] = useState<McpConnectionSummary["authType"]>(connection?.authType || "none");
     const [token, setToken] = useState("");
@@ -117,6 +122,10 @@ function ConnectionForm({ connection, onClose, onSaved }: { connection: McpConne
         event.preventDefault();
         setError("");
         const data: Record<string, unknown> = { name: name.trim(), url: url.trim(), authType, enabled };
+        if (!connection) {
+            if (!/^[a-z0-9_]{1,24}$/.test(serverName.trim())) { setError("Name must use 1–24 lowercase letters, numbers, or underscores."); return; }
+            data.serverName = serverName.trim();
+        }
         if (authType === "bearer") {
             if (token.trim()) data.token = token.trim();
             else if (!keepsSecret) { setError("Enter a bearer token for this connection."); return; }
@@ -141,7 +150,8 @@ function ConnectionForm({ connection, onClose, onSaved }: { connection: McpConne
     return <Modal title={connection ? "Edit connection" : "Add MCP connection"} description="Connect an HTTP MCP server. Its tools become available after you enable it in a workspace." onClose={close} className="mcp-form-modal">
         <form onSubmit={save} onChange={() => setDirty(true)}>
             <fieldset className="mcp-form-fields" disabled={busy}>
-                <label>Connection name<input autoFocus required maxLength={100} placeholder="e.g. Team knowledge" value={name} onChange={event => setName(event.target.value)}/></label>
+                <label htmlFor="mcp-server-name">Name<input id="mcp-server-name" autoFocus={!connection} required readOnly={!!connection} maxLength={connection ? undefined : 24} pattern={connection ? undefined : "[a-z0-9_]{1,24}"} title="Use 1–24 lowercase letters, numbers, or underscores." placeholder="e.g. sales_prod" spellCheck={false} autoCapitalize="none" autoCorrect="off" aria-describedby="mcp-server-name-hint mcp-tool-name-preview" value={serverName} onChange={event => { event.currentTarget.setCustomValidity(""); setServerName(event.target.value); }} onBlur={event => { event.currentTarget.setCustomValidity(""); setServerName(event.target.value.trim()); }} onInvalid={event => event.currentTarget.setCustomValidity("Name must use 1–24 lowercase letters, numbers, or underscores.")}/><span id="mcp-server-name-hint" className="mcp-field-hint">{connection ? "Used in tool names. This name cannot be changed." : "Use 1–24 lowercase letters, numbers, or underscores. Must be unique among your connections and cannot be changed after creation."}</span><span id="mcp-tool-name-preview" className="mcp-field-hint">Tool name: <code>{`mcp__${serverName.trim() || "name"}__tool_name`}</code></span></label>
+                <label htmlFor="mcp-display-name">Display name (optional)<input id="mcp-display-name" autoFocus={!!connection} maxLength={100} placeholder="e.g. Sales database" aria-describedby="mcp-display-name-hint" value={name} onChange={event => setName(event.target.value)}/><span id="mcp-display-name-hint" className="mcp-field-hint">Supports any language. Leave blank to display Name. Shown as: {name.trim() || serverName.trim() || "Name"}.</span></label>
                 <label>Server URL<input type="url" required maxLength={2048} placeholder="https://mcp.example.com/mcp" spellCheck={false} autoCapitalize="none" value={url} onChange={event => setUrl(event.target.value)}/><span className="mcp-field-hint">Use a server origin allowed by your administrator.</span></label>
                 <label>Authentication<select value={authType} onChange={event => setAuthType(event.target.value as McpConnectionSummary["authType"])}><option value="none">None</option><option value="bearer">Bearer token</option><option value="headers">Custom headers</option></select></label>
                 {authType !== "none" && <p className="mcp-secret-note">{keepsSecret ? <><Icon name="check" size={14}/>Configured. Leave the {authType === "bearer" ? "token" : "header fields"} blank to keep the saved credentials.</> : "Credentials are stored securely and never displayed after saving."}</p>}
@@ -150,7 +160,7 @@ function ConnectionForm({ connection, onClose, onSaved }: { connection: McpConne
                 <label className="mcp-checkbox-label"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/><span>Enable this connection<span className="mcp-field-hint">Select it in a workspace to let that agent use its tools.</span></span></label>
             </fieldset>
             {error && <ErrorBanner message={error}/>}
-            <div className="modal-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={close}>Cancel</button><button className="button button-primary" disabled={busy || !name.trim() || !url.trim()}>{busy ? <><span className="spinner"/>Saving…</> : connection ? "Save changes" : "Add connection"}</button></div>
+            <div className="modal-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={close}>Cancel</button><button className="button button-primary" disabled={busy || !serverName.trim() || !url.trim()}>{busy ? <><span className="spinner"/>Saving…</> : connection ? "Save changes" : "Add connection"}</button></div>
         </form>
     </Modal>;
 }
