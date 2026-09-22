@@ -15,7 +15,8 @@
     "db:migrate": "pnpm --filter @cloud-work/database migrate",
     "test:integration": "tsx scripts/integration.ts",
     "test:mcp": "tsx scripts/mcp-integration.ts",
-    "test:files": "tsx scripts/file-transfer-integration.ts"
+    "test:files": "tsx scripts/file-transfer-integration.ts",
+    "test:lifecycle": "tsx scripts/runtime-lifecycle-integration.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.13",

@@ -43,6 +43,7 @@ export class WorkspaceFileTransfers {
   private readonly uploads = new UploadBatchStore();
   private readonly active = new Set<Transfer>();
   constructor(private readonly timeoutMs = FILE_TRANSFER_LIMITS.timeoutMs) {}
+  get activity() { return { activeTransfers: this.active.size, uploadBatches: this.uploads.activeBatchCount }; }
 
   async handle(req: IncomingMessage, res: ServerResponse, root: string, segments: string[], url: URL): Promise<boolean> {
     const uploads = segments[3] === 'uploads';

@@ -45,7 +45,8 @@ export class Runs {
       let markedRunning = false;
       try {
         // Publish ownership of the busy lease before returning 202, so reaping cannot race startup.
-        await this.manager.leases.setBusy(userId, 'active-agent-tasks', sessionId);
+        await this.manager.admitActivity(userId, 'active-agent-tasks', sessionId);
+        await this.manager.leases.renew(sessionLock(sessionId), token);
         await db.update(agentSessions).set({ status: 'running', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
         markedRunning = true;
         await publish(this.manager.leases.redis, sessionId, { type: 'user-message', text: prompt });
@@ -190,20 +191,25 @@ export class Runs {
     const condition = userId ? and(eq(agentSessions.status, 'running'), eq(agentSessions.userId, userId)) : eq(agentSessions.status, 'running');
     const sessions = await db.select().from(agentSessions).where(condition);
     for (const session of sessions) {
-      if (await this.manager.leases.redis.exists(sessionLock(session.dshSessionId))) continue;
-      await this.manager.leases.withLock(workspaceLock(session.workspaceId), async () => {
-        if (await this.manager.leases.redis.exists(sessionLock(session.dshSessionId))) return;
-        await this.terminateExecution(session.userId, session.dshSessionId);
-        const runId = await this.manager.leases.redis.get(mcpRunKey(session.dshSessionId));
-        if (runId) {
-          await this.manager.mcp.revoke(session.userId, safeId(runId));
-          await this.manager.leases.redis.del(mcpRunKey(session.dshSessionId));
-        }
-        await publish(this.manager.leases.redis, session.dshSessionId, { type: 'error', message: 'Execution interrupted when its manager lease was lost. Your workspace files are preserved.' });
-        await publish(this.manager.leases.redis, session.dshSessionId, { type: 'status', status: 'error' });
-        await db.update(agentSessions).set({ status: 'error', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
-        await this.manager.leases.clearBusy(session.userId, 'active-agent-tasks', session.dshSessionId);
-      });
+      try {
+        if (await this.manager.leases.redis.exists(sessionLock(session.dshSessionId))) continue;
+        await this.manager.leases.withLock(workspaceLock(session.workspaceId), async () => {
+          if (await this.manager.leases.redis.exists(sessionLock(session.dshSessionId))) return;
+          await this.terminateExecution(session.userId, session.dshSessionId);
+          const runId = await this.manager.leases.redis.get(mcpRunKey(session.dshSessionId));
+          if (runId) {
+            await this.manager.mcp.revoke(session.userId, safeId(runId));
+            await this.manager.leases.redis.del(mcpRunKey(session.dshSessionId));
+          }
+          await publish(this.manager.leases.redis, session.dshSessionId, { type: 'error', message: 'Execution interrupted when its manager lease was lost. Your workspace files are preserved.' });
+          await publish(this.manager.leases.redis, session.dshSessionId, { type: 'status', status: 'error' });
+          await db.update(agentSessions).set({ status: 'error', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
+          await this.manager.leases.clearBusy(session.userId, 'active-agent-tasks', session.dshSessionId);
+        });
+      } catch (error) {
+        // Keep its running record/lease intact, but do not block unrelated tenants or manager startup.
+        this.log.error(error, `Stale execution recovery deferred for ${session.dshSessionId}`);
+      }
     }
   }
 

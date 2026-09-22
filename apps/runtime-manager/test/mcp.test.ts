@@ -210,3 +210,23 @@ test('stale-run recovery revokes durable run identifiers only after execution is
   await new Runs(manager, silent).recoverStale();
   assert.deepEqual(actions, ['cancel-confirmed', 'revoke', 'delete-pointer', 'database', 'clear-busy']);
 });
+
+test('one unrecoverable tenant retains running metadata without blocking recovery of another tenant', async t => {
+  const recovered: string[] = [], deferred: string[] = [];
+  t.mock.method(db, 'select', () => ({ from() { return { async where() { return ['alice', 'bob'].map(user => ({ id: user, userId: user, dshSessionId: user, workspaceId: user })); } }; } }) as never);
+  t.mock.method(db, 'update', () => ({ set() { return { async where() {} }; } }) as never);
+  const pipeline = { xadd() { return pipeline; }, expire() { return pipeline; }, async exec() { return [[null, 1]]; } };
+  const manager = {
+    leases: {
+      redis: { async exists() { return 0; }, async get() { return null; }, multi() { return pipeline; } },
+      async withLock(_key: string, operation: () => Promise<void>) { await operation(); },
+      async withUserLock(_key: string, operation: () => Promise<void>) { await operation(); },
+      async clearBusy(user: string) { recovered.push(user); },
+    },
+    async request(user: string) { if (user === 'alice') throw new Error('offline'); return Response.json({ ok: true }); },
+    async stopUnlocked() { throw new Error('Docker unavailable'); },
+  } as unknown as RuntimeManager;
+  await new Runs(manager, { error(_error, message) { if (message?.includes('deferred')) deferred.push(message); } }).recoverStale();
+  assert.deepEqual(recovered, ['bob']);
+  assert.equal(deferred.length, 1);
+});

@@ -41,7 +41,7 @@ services:
       MANAGER_TOKEN: ${MANAGER_TOKEN:-local-manager-change-this-4ccbc38537}
       RUNTIME_TOKEN_SECRET: ${RUNTIME_TOKEN_SECRET:-local-runtime-change-this-146987ad64}
       USER_DATA_ROOT: ${USER_DATA_ROOT:-/data/cloud-work/users}
-      RUNTIME_IMAGE: ${RUNTIME_IMAGE:-cloud-work-runtime:local}
+      RUNTIME_IMAGE: ${RUNTIME_IMAGE:-cloud-work-runtime:latest}
       RUNTIME_NETWORK: cloud-runtime
       MANAGER_CONTAINER_NAME: cloud-work-runtime-manager
       MCP_GATEWAY_URL: http://mcp-gateway:4100

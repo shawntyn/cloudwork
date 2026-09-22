@@ -84,6 +84,7 @@ export class UploadBatchStore {
   private readonly batches = new Map<string, Batch>();
   private readonly timer = setInterval(() => { void this.expire(); }, 30_000).unref();
   constructor(private readonly timeoutMs = FILE_TRANSFER_LIMITS.timeoutMs) {}
+  get activeBatchCount(): number { return this.batches.size; }
   private async expire(): Promise<void> {
     await Promise.allSettled([...this.batches].filter(([, batch]) => batch.expiresAt <= Date.now()).map(([id, batch]) => this.cancel(batch.root, id)));
   }

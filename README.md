@@ -13,9 +13,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-访问 http://localhost:3000。当 `RUNTIME_IMAGE` 指定的镜像标签不存在时，manager 会从自身已经构建好的不可变镜像 ID 派生用户镜像，默认名为 `cloud-work-runtime:local`。派生层复用工具链和依赖，检查 Runtime 类型并设置非 root 用户、HOME 与启动命令，无需再次下载依赖。镜像中没有 Compose 注入的运行时秘密。期间健康检查显示 starting；可以用 `docker compose logs -f runtime-manager` 查看进度。
+访问 http://localhost:3000。manager 会自动从本次部署的不可变镜像 ID 派生最新用户 Runtime，默认标签为 `cloud-work-runtime:latest`。派生层复用工具链和依赖，检查 Runtime 类型并设置非 root 用户、HOME 与启动命令，无需再次下载依赖。来源未变时复用镜像；来源变化时自动更新同一标签。镜像中没有 Compose 注入的运行时秘密。期间健康检查显示 starting；可以用 `docker compose logs -f runtime-manager` 查看进度。
 
-已有镜像标签和用户容器不会随 manager 重建自动更新。修改 DSH/Runtime 代码后，可将 `.env` 的 `RUNTIME_IMAGE` 改为新标签，再运行 `docker compose up -d --build`，由新 manager 派生对应镜像；也可通过 `docker build -f docker/runtime/Dockerfile -t cloud-work-runtime:local .` 独立构建。随后对已有用户 Runtime 执行 Remove，再 Start 或重新进入 Workspace，才会使用新镜像。仅修改 Key、模型或 Runtime 资源限制时，也需要更新 manager 并重建已有用户容器；用户文件会保留。
+更新代码、Key、模型或 Runtime 资源限制后，运行 `docker compose up -d --build` 即可，无需改版本号或让用户 Remove。manager 根据镜像 ID 和配置摘要自动替换空闲旧容器；正在执行 Agent、文件传输、未结束的上传批次或已登记任务时推迟更新；停止的旧容器不会被后台唤醒，下次进入工作区使用最新环境。HOME、工作区文件和数据库会话记录保留。`RUNTIME_IMAGE` 仅是本地输出标签，已有 `:local` 等值同样会自动刷新，不再用于固定自定义旧镜像。不要把其他项目的镜像名称用作此标签。
 
 `.env.example` 的默认秘密仅用于绑定 127.0.0.1 的本地试用。允许远程访问前，应替换 `BETTER_AUTH_SECRET`、`MANAGER_TOKEN`、`RUNTIME_TOKEN_SECRET`、PostgreSQL 和 Redis 密码，为 MCP 生成独立管理令牌与加密密钥，设置准确的 `BETTER_AUTH_URL`，通过 HTTPS 反向代理提供服务。密码放进连接 URL 时须使用 URL 安全文字（例如随机十六进制）。Web 是唯一发布宿主端口的服务。
 
@@ -58,7 +58,7 @@ tests/                 文件边界测试
 - 浏览器只读预览 **PNG、JPEG、GIF、WebP**（最大 **20 MiB**）；服务端验证文件签名并设置 `nosniff`。SVG/HTML 不作为网页渲染。**PDF、Word、Excel 暂不提供文档预览**，可下载原文件。
 - 传输经过 Web → manager → 用户 Runtime，无整文件 JSON/base64 包装。单次请求最长 15 分钟，断连会取消上游传输；manager 在传输结束前保持活动租约。用户代码沙箱仍然离线。
 
-反向代理需关闭上传请求缓冲和下载响应缓冲，并允许至少 100 MiB 请求体及 15 分钟传输，例如 Nginx 对文件 API 设置 `proxy_request_buffering off`、`proxy_buffering off`、`client_max_body_size 110m`、`proxy_read_timeout 900s` 和 `proxy_send_timeout 900s`。仍由应用按实际收到的字节执行限制。更新此功能后按前文使用新的 `RUNTIME_IMAGE` 标签重建 manager，并重建已有用户容器；仅更新 Web 无法启用旧 Runtime 中不存在的接口。
+反向代理需关闭上传请求缓冲和下载响应缓冲，并允许至少 100 MiB 请求体及 15 分钟传输，例如 Nginx 对文件 API 设置 `proxy_request_buffering off`、`proxy_buffering off`、`client_max_body_size 110m`、`proxy_read_timeout 900s` 和 `proxy_send_timeout 900s`。仍由应用按实际收到的字节执行限制。更新此功能需部署包含 manager 的完整平台，manager 会自动刷新 Runtime；仅更新 Web 无法启用旧 Runtime 中不存在的接口。
 
 ## MCP 连接
 
@@ -112,6 +112,10 @@ MCP 集成验收可运行 `pnpm test:mcp`：需要已启动并获准的 fixture�
 
 BullMQ 周期任务读取数据库活动时间及平台 busy leases，默认每 60 秒扫描。无操作达到 30 分钟且没有 active agent、短期文件操作、foreground command 或 registered keepalive job 时 stop；停止达到 24 小时且仍无活跃工作时 remove。手动 Stop/Remove 同样会拒绝活跃工作，应先停止 Agent。被动打开 SSE 不会延长 Runtime 生命周期。
 
+每次部署后立即调度检查，此后随周期扫描和工作区访问自动校验旧容器。manager/gateway 重建后会接回用户网络；已有 Runtime 的缺失网络或 DNS 别名会自动恢复。任务登记和容器替换共用用户锁，后台检查不延长空闲时间。空闲容器健康检查失败时尝试重建，失败后等待 5 分钟再尝试，避免无限重建；某个用户恢复失败不阻塞其他用户。Redis/任务状态不明时不执行替换。修改 `USER_DATA_ROOT` 属于数据迁移，发现已有容器挂载路径不一致会明确报错，不能把空目录当成迁移后的数据。
+
+自动更新容器不等于整个 Compose 发布零中断：manager 重建仍会断开它代理的连接；现有 Agent 停机和孤立任务恢复机制保留，不自动重跑中断任务。上传批次保护由新版 Runtime 的健康接口报告；首次从旧版本升级建议避开活跃上传。完整升级回归可运行 `pnpm test:lifecycle`：它在独立 Compose 项目、3031 端口和 `.cache/runtime-lifecycle-data` 中验证旧部署升级、数据保留、无变更重部署、网络修复、上传批次保护和停止容器恢复，保留测试数据与报告。默认基线为本地已有平台镜像，可用 `LIFECYCLE_BASELINE_MANAGER_IMAGE`、`LIFECYCLE_BASELINE_GATEWAY_IMAGE`、`LIFECYCLE_BASELINE_WEB_IMAGE` 指定旧版镜像。
+
 运行中的 Agent 租约有效期 120 秒，每 20 秒续期。manager 崩溃后，过期租约会在后续扫描中触发孤立执行清理：确认终止后写入 error 终态，保留文件并允许新一轮请求，不会自动续跑被中断的一轮。Redis 不可用或终止结果无法确认时，系统保留运行记录并等待恢复，不会将未知状态当作空闲回收。
 
 内部管理接口 `POST /internal/users/:userId/leases/:kind/:leaseId` 可登记或续期 `foreground-commands` / `keepalive-jobs`，请求体为 `{ "ttlMs": 120000 }`；有效期支持 1 秒至 24 小时，调用方必须按需续期，`DELETE` 同一路径释放租约。它们不会仅因存在 OS 进程而被推断。接口需要 manager 凭证，当前 UI 不提供独立终端或常驻服务注册。
@@ -128,11 +132,11 @@ DSH Sandbox 保持开启。Runtime 启动时功能探测 bubblewrap / Landlock�
 
 用户代码使用镜像内置的 Node.js 24 和 Python 3.11。Python 预装 `pandas`、`numpy`、`python-docx`（导入名 `docx`）和 `PyYAML`（导入名 `yaml`）；运行 `python` 或 `python3` 即可使用。版本及传递依赖锁定在 `docker/runtime/requirements.txt`，安装在 root 拥有的 `/opt/workspace-python` 中；无需在工作区创建虚拟环境或下载安装。Node.js 提供标准库，如 `node:fs`、`node:path`、`node:crypto`；平台 `/app` 中的服务依赖不是用户项目的公共依赖清单。
 
-DSH 工具执行边界同时应用文件沙箱和 Linux seccomp 网络限制，子进程及其后代不能访问互联网、内网、DNS 或回环服务。`npm install`、`pnpm add`、`pip install` 不能在线获取新依赖；增加内置库需由维护者修改镜像并重建用户 Runtime。用户已有文件仍保留，本地代码和已有文件不因断网被删除。
+DSH 工具执行边界同时应用文件沙箱和 Linux seccomp 网络限制，子进程及其后代不能访问互联网、内网、DNS 或回环服务。`npm install`、`pnpm add`、`pip install` 不能在线获取新依赖；增加内置库需修改镜像并重新部署，平台自动更新用户 Runtime。用户已有文件仍保留，本地代码和已有文件不因断网被删除。
 
 DSH 的模型请求由沙箱外的受控宿主进程发送，聊天、流式回复与平台文件操作仍可用。通用 Web 搜索/抓取和宿主进程内执行代码的 workflow 工具关闭；经平台绑定的 MCP 工具通过 gateway 独立授权。模型读写文件统一通过受限 Bash/Python 执行，避免原生父进程文件写入的符号链接竞态绕过内核边界。Web 文件 API 保留已有的路径及目录描述符校验。宿主上的 `docker exec` 属于管理员操作，不自动经过 DSH 命令沙箱；不能用这种方式的联网结果判断用户工具是否有网络。
 
-更换内置依赖或断网策略后，按启动章节更新 `RUNTIME_IMAGE` 并重建已有用户容器。真实模型与离线工具的联合验证：
+更换内置依赖或断网策略后，按启动章节重新部署，等待平台自动更新空闲用户容器。真实模型与离线工具的联合验证：
 
 ```sh
 docker exec cloud-work-runtime-<test-user-id> \
@@ -157,7 +161,7 @@ docker exec cloud-work-runtime-<test-user-id> \
 
 受当前 DSH sandbox 配置接口限制，Agent 命令的 npm/pnpm/pip/XDG 缓存放在当前 Workspace 内的 `.npm`、`.cache`、`.local` 中，因此同样持久化且无需扩大沙盒写入范围；HOME 中的目录继续供 DSH 宿主及用户配置持久化使用。
 
-默认 provider/model 使用此版本实际名称 `deepseek-official / deepseek-v4-flash`，`DSH_API_KEY` 在子进程中映射为 `DEEPSEEK_API_KEY`。没有 Key 时界面仍可使用鉴权和文件功能，发送消息会显示明确的配置错误。更换 Key 后更新 manager 并重建既有用户 Runtime。
+默认 provider/model 使用此版本实际名称 `deepseek-official / deepseek-v4-flash`，`DSH_API_KEY` 在子进程中映射为 `DEEPSEEK_API_KEY`。没有 Key 时界面仍可使用鉴权和文件功能，发送消息会显示明确的配置错误。更换 Key 后重新部署 manager，由平台自动更新既有用户 Runtime。
 
 自定义 OpenAI / Anthropic 兼容服务通过 DSH 自带的 `llm-pi-ai` provider 插件接入，继续使用同一个官方 Agent loop、工具和会话；前端不直接连接模型接口。配置示例：
 
@@ -172,7 +176,7 @@ DSH_MAX_TOKENS=8192
 
 `DSH_PROVIDER=anthropic-compatible` 可改用 Anthropic Messages 协议。OpenAI 模式将根地址补为 `/v1`，已经带 `/v1` 的地址保持不变；Anthropic 模式由 SDK 添加 `/v1/messages`，配置末尾的 `/v1` 会被规范化，避免重复路径。自定义模型 ID 显式注册到 DSH provider，不要求在 DSH 内置模型清单中存在。可选 context/output token 上限未设置时使用 131072/8192，output 不能超过 context。
 
-修改 `.env` 后执行 `docker compose up -d --build` 更新 manager；已有用户需从 Runtime 菜单执行 **Remove container**，再 **Start / reconnect** 或重新进入 Workspace，以刷新容器中的模型环境变量。只移除容器，文件及 DSH 历史仍保留。修改 Adapter 代码时还需按前文更新 `RUNTIME_IMAGE` 标签。
+修改 `.env` 或 Adapter 代码后执行 `docker compose up -d --build`；平台自动刷新镜像和容器中的模型环境变量，无需手动 Remove 或更改 `RUNTIME_IMAGE` 标签。文件及 DSH 历史仍保留。
 
 Redis 开启 AOF；平台事件流每会话约保留最近 10,000 条、7 天，用于刷新/断线重连。完整 Agent 状态仍由 HOME 内 DSH 日志持久化；超过保留期的历史暂不在 Web 对话中完整展示。
 
@@ -187,7 +191,7 @@ Redis 开启 AOF；平台事件流每会话约保留最近 10,000 条、7 天，
 | RUNTIME_IDLE_MINUTES | `30`，空闲停止时间 |
 | RUNTIME_REMOVE_HOURS | `24`，停止后删除容器时间 |
 | RUNTIME_REAPER_INTERVAL_MS | `60000`，回收扫描间隔 |
-| RUNTIME_IMAGE | `cloud-work-runtime:local` |
+| RUNTIME_IMAGE | `cloud-work-runtime:latest`，自动刷新的本地输出标签 |
 | DSH_PROVIDER / DSH_MODEL / DSH_API_KEY | provider、模型、真实 API Key |
 | DSH_BASE_URL | 自定义兼容服务根地址；provider 为 `openai-compatible` / `anthropic-compatible` 时必填 |
 | DSH_CONTEXT_WINDOW / DSH_MAX_TOKENS | 自定义模型 context/output 上限；默认 `131072 / 8192` |

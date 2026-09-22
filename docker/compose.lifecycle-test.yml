@@ -1,0 +1,19 @@
+# Isolated overlay for scripts/runtime-lifecycle-integration.ts. Never applies to the main project.
+services:
+  runtime-manager:
+    container_name: cloud-work-lifecycle-test-manager
+    image: cloud-work-lifecycle-test-manager
+    environment:
+      MANAGER_CONTAINER_NAME: cloud-work-lifecycle-test-manager
+      MCP_GATEWAY_CONTAINER_NAME: cloud-work-lifecycle-test-gateway
+      RUNTIME_NETWORK: cloud-work-lifecycle-test-runtime
+  mcp-gateway:
+    container_name: cloud-work-lifecycle-test-gateway
+    image: cloud-work-lifecycle-test-gateway
+  web:
+    image: cloud-work-lifecycle-test-web
+    ports: !override
+      - "127.0.0.1:3031:3000"
+networks:
+  cloud-runtime:
+    name: cloud-work-lifecycle-test-runtime

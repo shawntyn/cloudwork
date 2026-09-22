@@ -20,22 +20,24 @@ export async function startReaper(manager: RuntimeManager, runs: Runs, log: { er
     const rows = await db.select().from(runtimeInstances);
     for (const candidate of rows) {
       if (candidate.status === 'REMOVED') continue;
-      await manager.leases.withUserLock(candidate.userId, async () => {
+      try { await manager.leases.withUserLock(candidate.userId, async () => {
+        await manager.reconcileRuntimeUnlocked(candidate.userId);
         const row = await manager.row(candidate.userId);
         if (!row) return;
-        const busy = await manager.leases.isBusy(row.userId) || await manager.hasRunningSessions(row.userId);
         const container = await manager.inspect(row.userId);
         if (!container) { await manager.setStatus(row.userId, 'REMOVED', null); return; }
+        const busy = await manager.leases.isBusy(row.userId) || await manager.hasRunningSessions(row.userId) || (container.State.Running && await manager.hasRuntimeActivity(row.userId));
         const action = reaperAction({ running: container.State.Running, busy, lastActiveAt: row.lastActiveAt.getTime(), stoppedAt: row.stoppedAt?.getTime() ?? null }, Date.now(), manager.config.idleMs, manager.config.removeMs);
         if (action === 'stop') await manager.stopUnlocked(row.userId);
         else if (action === 'remove') await manager.removeUnlocked(row.userId);
-        else if (!container.State.Running && !row.stoppedAt) await manager.setStatus(row.userId, 'STOPPED', container.Id);
+        else if (!container.State.Running && !row.stoppedAt && row.status !== 'ERROR') await manager.setStatus(row.userId, 'STOPPED', container.Id);
         else if (container.State.Running && !busy && row.status !== 'IDLE' && row.status !== 'ERROR') await manager.setStatus(row.userId, 'IDLE', container.Id);
-      });
+      }); } catch (error) { log.error(error, `Runtime reconciliation failed for ${candidate.userId}; other users will still be checked`); }
     }
   }, { connection, concurrency: 1 });
   worker.on('error', error => log.error(error, 'Runtime reaper error'));
   worker.on('failed', (_job, error) => log.error(error, 'Runtime reaper job failed safely'));
   await queue.upsertJobScheduler('idle-runtime-sweep', { every: manager.config.reaperMs }, { name: 'sweep', data: {}, opts: { removeOnComplete: 20, removeOnFail: 100 } });
+  await queue.add('deployment-reconcile', {}, { removeOnComplete: true, removeOnFail: 100 });
   return async () => { await worker.close(); await queue.close(); await connection.quit(); };
 }

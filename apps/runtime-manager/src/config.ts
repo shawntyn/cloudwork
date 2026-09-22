@@ -86,7 +86,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     managerContainer: env.MANAGER_CONTAINER_NAME ?? 'cloud-work-runtime-manager',
     mcpGatewayUrl: gatewayUrl.origin, mcpGatewayAdminToken,
     mcpGatewayContainer: env.MCP_GATEWAY_CONTAINER_NAME ?? 'cloud-work-mcp-gateway',
-    image: env.RUNTIME_IMAGE ?? 'cloud-work-runtime:local', network: env.RUNTIME_NETWORK ?? 'cloud-runtime',
+    image: env.RUNTIME_IMAGE ?? 'cloud-work-runtime:latest', network: env.RUNTIME_NETWORK ?? 'cloud-runtime',
     cpus: numberEnv(env, 'RUNTIME_CPUS', 2), memoryMb: numberEnv(env, 'RUNTIME_MEMORY_MB', 4096, 128),
     pids: Math.floor(numberEnv(env, 'RUNTIME_PIDS_LIMIT', 256, 32)),
     idleMs: numberEnv(env, 'RUNTIME_IDLE_MINUTES', 30) * 60_000,

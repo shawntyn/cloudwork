@@ -8,9 +8,10 @@ import { and, eq } from 'drizzle-orm';
 import { db, runtimeInstances, agentSessions } from '@cloud-work/database';
 import type { Config } from './config.js';
 import { HttpError, mcpControlAlias, networkNames, runtimeControlAlias, runtimeEnvironment, runtimeName, runtimeToken, safeId } from './config.js';
-import type { Leases } from './leases.js';
+import type { Leases, LeaseKind } from './leases.js';
 import { runtimeImageDockerfile } from './runtime-image.js';
 import { McpGateway } from './mcp.js';
+import { assertRuntimeDataMounts, runtimeBinds, runtimeSpec, runtimeSpecLabel } from './runtime-spec.js';
 
 const managed = 'cloud-work.managed';
 const owner = 'cloud-work.user-id';
@@ -19,6 +20,8 @@ export const missing = (error: unknown) => !!error && typeof error === 'object' 
 export class RuntimeManager {
   public docker: Docker;
   public mcp: McpGateway;
+  public imageId = '';
+  private readonly repairAfter = new Map<string, number>();
   constructor(public config: Config, public leases: Leases, private log: { info: (value: unknown, message?: string) => void; error: (value: unknown, message?: string) => void }) {
     this.docker = new Docker({ socketPath: config.dockerSocket });
     this.mcp = new McpGateway(config);
@@ -32,13 +35,34 @@ export class RuntimeManager {
     const managerContainer = await this.docker.getContainer(this.config.managerContainer).inspect();
     await this.gatewayContainer();
     await mkdir(this.config.dataRoot, { recursive: true, mode: 0o711 });
-    try { await this.docker.getImage(this.config.image).inspect(); }
+    await this.prepareImage(managerContainer.Image);
+    // Compose recreates manager/gateway without their dynamically attached tenant networks.
+    // Restore those links before stale-run cancellation tries to reach surviving runtimes.
+    const rows = await db.select().from(runtimeInstances);
+    for (const row of rows) {
+      try {
+        await this.leases.withUserLock(row.userId, async () => {
+          const info = await this.inspect(row.userId);
+          if (!info?.State.Running) return;
+          const busy = await this.leases.isBusy(row.userId) || await this.hasRunningSessions(row.userId);
+          await this.ensureNetworks(row.userId, !busy);
+          await this.repairRuntimeNetworks(row.userId, info, busy);
+        });
+      } catch (error) { this.log.error(error, 'Runtime network restoration deferred; reconciliation will retry'); }
+    }
+  }
+
+  async prepareImage(sourceImageId: string) {
+    let image: Docker.ImageInspectInfo | undefined;
+    try { image = await this.docker.getImage(this.config.image).inspect(); }
     catch (error) {
       if (!missing(error)) throw error;
-      this.log.info({ image: this.config.image, sourceImage: managerContainer.Image }, 'Building user runtime from prepared manager image');
+    }
+    if (image?.Config.Labels?.['cloud-work.runtime-source-image'] !== sourceImageId) {
+      this.log.info({ image: this.config.image, sourceImage: sourceImageId }, 'Updating user runtime from prepared manager image');
       const context = await mkdtemp(path.join(tmpdir(), 'cloud-work-runtime-image-'));
       try {
-        await writeFile(path.join(context, 'Dockerfile'), runtimeImageDockerfile(managerContainer.Image), { mode: 0o600 });
+        await writeFile(path.join(context, 'Dockerfile'), runtimeImageDockerfile(sourceImageId), { mode: 0o600 });
         const archive = tar.pack(context);
         const stream = await this.docker.buildImage(archive, { t: this.config.image, dockerfile: 'Dockerfile', rm: true, pull: false });
         await new Promise<void>((resolve, reject) => {
@@ -48,21 +72,23 @@ export class RuntimeManager {
           });
         });
       } finally { await rm(context, { recursive: true, force: true }); }
-      await this.docker.getImage(this.config.image).inspect();
+      image = await this.docker.getImage(this.config.image).inspect();
     }
+    if (image?.Config.Labels?.['cloud-work.runtime-source-image'] !== sourceImageId) throw new Error('Runtime image does not match this deployment');
+    this.imageId = image.Id;
   }
 
   async row(userId: string) {
     return (await db.select().from(runtimeInstances).where(eq(runtimeInstances.userId, safeId(userId))).limit(1))[0];
   }
 
-  async setStatus(userId: string, status: 'STARTING' | 'RUNNING' | 'IDLE' | 'STOPPED' | 'REMOVED' | 'ERROR', containerId?: string | null) {
+  async setStatus(userId: string, status: 'STARTING' | 'RUNNING' | 'IDLE' | 'STOPPED' | 'REMOVED' | 'ERROR', containerId?: string | null, touch = true) {
     const now = new Date();
     const values = {
       status, updatedAt: now,
       ...(containerId !== undefined ? { containerId } : {}),
       ...(status === 'STOPPED' ? { stoppedAt: now } : {}),
-      ...(status === 'RUNNING' || status === 'STARTING' ? { stoppedAt: null, lastActiveAt: now } : {}),
+      ...(status === 'RUNNING' || status === 'STARTING' ? { stoppedAt: null, ...(touch ? { lastActiveAt: now } : {}) } : {}),
     };
     await db.insert(runtimeInstances).values({
       id: `rt_${randomUUID()}`, userId: safeId(userId), containerName: runtimeName(userId), hostId: this.config.hostId,
@@ -106,7 +132,7 @@ export class RuntimeManager {
     }
   }
 
-  private async ensureNetworks(userId: string) {
+  private async ensureNetworks(userId: string, reconnect = true) {
     const networks = networkNames(userId);
     await this.ensureNetwork(networks.control, userId, true);
     await this.ensureNetwork(networks.egress, userId, false);
@@ -119,7 +145,10 @@ export class RuntimeManager {
     if (!gatewayEndpoint) {
       await this.docker.getNetwork(networks.control).connect({ Container: gateway.Id, EndpointConfig: { Aliases: [mcpControlAlias(userId)] } });
     } else if (!gatewayEndpoint.Aliases?.includes(mcpControlAlias(userId))) {
-      throw new Error('MCP gateway control network alias mismatch');
+      if (!reconnect) throw new HttpError(503, 'Runtime network recovery is waiting for active work to finish');
+      const network = this.docker.getNetwork(networks.control);
+      await network.disconnect({ Container: gateway.Id });
+      await network.connect({ Container: gateway.Id, EndpointConfig: { Aliases: [mcpControlAlias(userId)] } });
     }
     return networks;
   }
@@ -130,45 +159,149 @@ export class RuntimeManager {
     return gateway;
   }
 
-  async ensureRuntime(userId: string) {
-    return this.leases.withUserLock(userId, async () => {
-      try {
-        let info = await this.inspect(userId);
-        const networks = await this.ensureNetworks(userId);
-        if (!info) {
-          await this.setStatus(userId, 'STARTING');
-          const directories = await this.prepareDirectories(userId);
-          const endpoint = (priority = 0, control = false) => ({ Aliases: [runtimeName(userId), ...(control ? [runtimeControlAlias(userId)] : [])], GwPriority: priority });
-          const container = await this.docker.createContainer({
-            name: runtimeName(userId), Image: this.config.image, User: '1000:1000', WorkingDir: '/home/work',
-            Labels: { [managed]: 'true', [owner]: userId },
-            Env: runtimeEnvironment(this.config, userId),
-            ExposedPorts: { '3080/tcp': {} },
-            HostConfig: {
-              Binds: [`${directories.home}:/home/work:rw`, `${directories.workspaces}:/home/work/workspaces:rw`],
-              NanoCpus: Math.round(this.config.cpus * 1e9), Memory: Math.round(this.config.memoryMb * 1024 * 1024),
-              MemorySwap: Math.round(this.config.memoryMb * 1024 * 1024), PidsLimit: this.config.pids,
-              CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges:true'], Privileged: false,
-              Init: true, NetworkMode: networks.egress, RestartPolicy: { Name: 'no' },
-              LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
-            },
-            NetworkingConfig: { EndpointsConfig: {
-              [networks.egress]: endpoint(1), [networks.control]: endpoint(0, true), [this.config.network]: endpoint(),
-            } },
-          });
-          await this.setStatus(userId, 'STARTING', container.id);
-          info = await container.inspect();
-        }
-        if (!info.State.Running) {
-          await this.setStatus(userId, 'STARTING', info.Id);
-          await this.docker.getContainer(info.Id).start();
-        }
-        await this.waitHealthy(userId);
-        return await this.setStatus(userId, 'RUNNING', info.Id);
-      } catch (error) {
-        await this.setStatus(userId, 'ERROR').catch(() => {});
-        throw error;
+  private outdated(userId: string, info: Docker.ContainerInspectInfo) {
+    if (!this.imageId) throw new HttpError(503, 'Runtime image is still being prepared');
+    return info.Image !== this.imageId || info.Config.Labels?.[runtimeSpecLabel] !== runtimeSpec(this.config, userId);
+  }
+
+  private async repairRuntimeNetworks(userId: string, info: Docker.ContainerInspectInfo, busy: boolean) {
+    const networks = networkNames(userId);
+    for (const name of [networks.egress, networks.control, this.config.network]) {
+      const aliases = [runtimeName(userId), ...(name === networks.control ? [runtimeControlAlias(userId)] : [])];
+      const current = info.NetworkSettings.Networks[name];
+      if (current && aliases.every(alias => current.Aliases?.includes(alias))) continue;
+      if (current && busy) throw new HttpError(503, 'Runtime network recovery is waiting for active work to finish');
+      const network = this.docker.getNetwork(name);
+      if (current) await network.disconnect({ Container: info.Id });
+      const endpoint = { Aliases: aliases, GwPriority: name === networks.egress ? 1 : 0 };
+      await network.connect({ Container: info.Id, EndpointConfig: endpoint });
+    }
+  }
+
+  private async health(userId: string) {
+    const response = await this.request(userId, '/health', { headers: { connection: 'close' } }, 3000);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new HttpError(503, `Runtime health check returned ${response.status}`);
+    }
+    const value = await response.json() as { ok?: boolean; activeSessions?: number; activeTransfers?: number; uploadBatches?: number };
+    if (value.ok !== true) throw new HttpError(503, 'Runtime health check returned an invalid response');
+    return { busy: (value.activeSessions ?? 0) > 0 || (value.activeTransfers ?? 0) > 0 || (value.uploadBatches ?? 0) > 0 };
+  }
+
+  private async probeHealth(userId: string) {
+    // Docker DNS/pooled sockets can briefly refer to the old endpoint after reconnection.
+    // A transient failed probe is not sufficient evidence to destroy a healthy container.
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.health(userId); }
+      catch (error) {
+        if (attempt === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
+    }
+  }
+
+  /** Caller holds the lifecycle lock; no new work can be admitted during replacement. */
+  private async replaceContainer(userId: string, info: Docker.ContainerInspectInfo) {
+    assertRuntimeDataMounts(this.config, userId, info);
+    this.log.info({ userId, containerId: info.Id, imageId: this.imageId }, 'Replacing idle runtime; persistent directories are retained');
+    if (info.State.Running) await this.docker.getContainer(info.Id).stop({ t: 10 });
+    await this.docker.getContainer(info.Id).remove({ v: false, force: false });
+    await this.setStatus(userId, 'REMOVED', null, false);
+  }
+
+  private async ensureRuntimeUnlocked(userId: string, touch = true) {
+    try {
+      let info = await this.inspect(userId);
+      let busy = await this.leases.isBusy(userId) || await this.hasRunningSessions(userId);
+      const networks = await this.ensureNetworks(userId, !busy);
+      if (info) {
+        assertRuntimeDataMounts(this.config, userId, info);
+        await this.repairRuntimeNetworks(userId, info, busy);
+        let healthy = false;
+        if (info.State.Running) {
+          try { const health = await this.probeHealth(userId); healthy = true; busy ||= health.busy; }
+          catch { /* An idle unhealthy container gets one bounded replacement below. */ }
+        }
+        const outdated = this.outdated(userId, info);
+        if (!busy && (outdated || (info.State.Running && !healthy) || (!info.State.Running && this.repairAfter.has(userId)))) {
+          if ((this.repairAfter.get(userId) ?? 0) > Date.now()) throw new HttpError(503, 'Runtime recovery is cooling down after a failed attempt. Retry in a few minutes.');
+          this.repairAfter.set(userId, Date.now() + 5 * 60_000);
+          await this.replaceContainer(userId, info);
+          info = undefined;
+        } else if (info.State.Running && healthy) {
+          this.repairAfter.delete(userId);
+          return await this.setStatus(userId, 'RUNNING', info.Id, touch);
+        } else if (info.State.Running && busy) {
+          throw new HttpError(503, 'Runtime is unavailable while active work is protected. Recovery will retry after it finishes.');
+        }
+      }
+      if (!info) {
+        if (!this.imageId) throw new HttpError(503, 'Runtime image is still being prepared');
+        this.repairAfter.set(userId, Date.now() + 5 * 60_000);
+        await this.setStatus(userId, 'STARTING', undefined, touch);
+        await this.prepareDirectories(userId);
+        const endpoint = (priority = 0, control = false) => ({ Aliases: [runtimeName(userId), ...(control ? [runtimeControlAlias(userId)] : [])], GwPriority: priority });
+        const container = await this.docker.createContainer({
+          name: runtimeName(userId), Image: this.imageId, User: '1000:1000', WorkingDir: '/home/work',
+          Labels: { [managed]: 'true', [owner]: userId, [runtimeSpecLabel]: runtimeSpec(this.config, userId) },
+          Env: runtimeEnvironment(this.config, userId),
+          ExposedPorts: { '3080/tcp': {} },
+          HostConfig: {
+            Binds: runtimeBinds(this.config, userId),
+            NanoCpus: Math.round(this.config.cpus * 1e9), Memory: Math.round(this.config.memoryMb * 1024 * 1024),
+            MemorySwap: Math.round(this.config.memoryMb * 1024 * 1024), PidsLimit: this.config.pids,
+            CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges:true'], Privileged: false,
+            Init: true, NetworkMode: networks.egress, RestartPolicy: { Name: 'no' },
+            LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
+          },
+          NetworkingConfig: { EndpointsConfig: {
+            [networks.egress]: endpoint(1), [networks.control]: endpoint(0, true), [this.config.network]: endpoint(),
+          } },
+        });
+        await this.setStatus(userId, 'STARTING', container.id, touch);
+        info = await container.inspect();
+      }
+      if (!info.State.Running) {
+        await this.setStatus(userId, 'STARTING', info.Id, touch);
+        await this.docker.getContainer(info.Id).start();
+      }
+      await this.waitHealthy(userId);
+      this.repairAfter.delete(userId);
+      return await this.setStatus(userId, 'RUNNING', info.Id, touch);
+    } catch (error) {
+      await this.setStatus(userId, 'ERROR').catch(() => {});
+      throw error;
+    }
+  }
+
+  async ensureRuntime(userId: string) {
+    return this.leases.withUserLock(userId, () => this.ensureRuntimeUnlocked(userId));
+  }
+
+  /** Background reconciliation never wakes stopped tenants or extends idle timers. */
+  async reconcileRuntimeUnlocked(userId: string) {
+    const info = await this.inspect(userId);
+    if (!info) return;
+    if (info.State.Running) { await this.ensureRuntimeUnlocked(userId, false); return; }
+    if ((await this.row(userId))?.status === 'ERROR') {
+      if ((this.repairAfter.get(userId) ?? 0) > Date.now()) return;
+      this.repairAfter.set(userId, 0);
+      await this.ensureRuntimeUnlocked(userId, false);
+      return;
+    }
+    if (this.outdated(userId, info) && !await this.leases.isBusy(userId) && !await this.hasRunningSessions(userId)) {
+      assertRuntimeDataMounts(this.config, userId, info);
+      await this.removeUnlocked(userId);
+    }
+  }
+
+  async hasRuntimeActivity(userId: string) { return (await this.health(userId)).busy; }
+
+  async admitActivity(userId: string, kind: LeaseKind, id: string, ensure = true) {
+    await this.leases.withUserLock(userId, async () => {
+      if (ensure) await this.ensureRuntimeUnlocked(userId);
+      await this.leases.setBusy(userId, kind, id);
     });
   }
 
@@ -254,10 +387,8 @@ export class RuntimeManager {
       const info = await this.inspect(userId);
       if (!info?.State.Running) throw new HttpError(503, `Runtime exited during startup (exit ${info?.State.ExitCode ?? 'unknown'}); inspect runtime logs for sandbox readiness`);
       try {
-        const response = await this.request(userId, '/health', {}, 3000);
-        if (response.ok) return;
-        lastError = `Runtime health check returned ${response.status}`;
-        await response.body?.cancel();
+        await this.health(userId);
+        return;
       } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
       await new Promise(resolve => setTimeout(resolve, 750));
     }
@@ -266,10 +397,10 @@ export class RuntimeManager {
 
   async withActivity<T>(userId: string, operation: () => Promise<T>, ensureRuntime = true): Promise<T> {
     const id = randomUUID();
-    await this.leases.setBusy(userId, 'active-connections', id);
+    await this.admitActivity(userId, 'active-connections', id, ensureRuntime);
     const heartbeat = setInterval(() => { void this.leases.setBusy(userId, 'active-connections', id).catch(error => this.log.error(error, 'Activity lease refresh failed')); }, this.config.heartbeatMs);
     heartbeat.unref();
-    try { if (ensureRuntime) await this.ensureRuntime(userId); return await operation(); }
+    try { return await operation(); }
     finally {
       clearInterval(heartbeat);
       try { await this.touchRuntime(userId); }

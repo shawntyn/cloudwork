@@ -221,6 +221,7 @@ test('upstream upload errors remain JSON responses instead of losing the client 
 test('activity cleanup clears the busy lease even when last-active storage fails', async () => {
   let cleared = false;
   const manager = new RuntimeManager({ heartbeatMs: 1000 } as RuntimeManager['config'], {
+    withUserLock: async (_user: string, operation: () => Promise<unknown>) => operation(),
     setBusy: async () => {}, clearBusy: async () => { cleared = true; },
   } as unknown as Leases, { info() {}, error() {} });
   manager.touchRuntime = async () => { throw new Error('Database unavailable'); };

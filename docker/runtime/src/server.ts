@@ -57,7 +57,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://runtime');
     const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     const method = req.method;
-    if (method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, sandbox, activeSessions: active.size });
+    if (method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, sandbox, activeSessions: active.size, ...fileTransfers.activity });
     if (segments[0] === 'workspaces' && segments[1]) {
       const id = validateId(segments[1]);
       const root = workspacePath(id);

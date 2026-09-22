@@ -1,5 +1,16 @@
 # 实际验证记录
 
+## 自动更新 Runtime 与部署后恢复（2026-09-22）
+
+本轮修改在独立 `cloud-work-lifecycle-test` Compose 项目和 `http://localhost:3031` 验证。没有重部署主项目的本地服务，也没有连接或部署 Ubuntu 服务器。下方旧记录中的手动改标签、Remove/Start 属于历史版本流程，当前流程见 README。
+
+- 全仓库 `pnpm typecheck`、`pnpm test` 和 `docker compose config --quiet` 通过；最终 manager 回归 **53 项通过**，覆盖镜像刷新、配置变更、活动保护、并发登记、网络修复、失败等待重试、数据挂载/归属校验和单用户恢复失败隔离。macOS 的 2 项 Linux 专用测试仍按原规则跳过。
+- `pnpm test:lifecycle` **6 项真实 Docker 检查全部通过**：旧部署创建的工作区经 `docker compose up -d --build` 自动升级；文件、ZIP 字节、HOME 标记和数据库会话保留；无变更重复 build 不替换容器；断开的控制网络自动接回且不替换健康容器；仅修改模型配置时，未结束的上传批次阻止替换，完成后自动更新；停止容器不被发布唤醒，下次访问使用最新配置。报告：`artifacts/runtime-lifecycle-integration.json`。
+- Docker 构建包含 Next.js 生产构建和 Runtime 类型检查。真实网络故障测试暴露并修复了“重新接网后首次探测命中旧连接，导致误重建”的边界，新增短暂重试回归。
+- 在新 Linux manager 镜像内补跑 `tests/file-transfer.test.ts`、`tests/file-transfer-http.test.ts`、`tests/workspace.test.ts`，**19 项全部通过**，包括 Linux 目录描述符置换防护。
+- 在隔离平台补跑基础公共 API 集成，**14 项通过**，包含账户/租户隔离、文件操作、停止后恢复、会话权限及真实 SSE 启动/终态。报告：`artifacts/runtime-lifecycle-api.json`。本轮使用无模型 Key 的测试配置，没有宣称真实模型生成成功或发布过程零中断。
+- 多轮测试曾耗尽本机 Docker 默认地址池；通过 manager 只移除本轮测试账号的临时 Runtime 和专属网络后，API 回归通过。测试 HOME、工作区和数据库数据保留，没有清理其他项目网络。测试中还观察到重启后的旧生命周期锁会等待租约到期，不强行抢锁。
+
 ## 流式文件传输与基础预览（2026-09-21）
 
 本轮本地 Web、manager 和验证账号 Runtime 已更新。当前新建用户使用 `cloud-work-runtime:files-v2`；其他已有用户容器仍需按 README 的 Remove/Start 流程刷新。原浏览器测试账号升级前后分别校验了 46 个原有文件和 52 个包含新测试产物的文件，SHA-256 均保持一致。
