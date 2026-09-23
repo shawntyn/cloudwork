@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, agentSessions, workspaces } from '@cloud-work/database';
 import type { AgentEvent } from '@cloud-work/protocol';
@@ -10,6 +10,15 @@ export const sessionLock = (id: string) => `session:${safeId(id)}:run-lock`;
 export const workspaceLock = (id: string) => `workspace:${safeId(id)}:operation-lock`;
 export const workspaceDeleted = (id: string) => `workspace:${safeId(id)}:deleted`;
 export const mcpRunKey = (id: string) => `session:${safeId(id)}:mcp-run`;
+
+function titleFromPrompt(prompt: string) {
+  const characters = Array.from(prompt.replace(/\s+/gu, ' ').trim());
+  return characters.slice(0, 80).join('') + (characters.length > 80 ? '…' : '');
+}
+
+function runErrorCode(message: string) {
+  return /timed?\s*out|timeout/i.test(message) ? 'RUN_TIMEOUT' : 'RUN_FAILED';
+}
 
 export async function ownedWorkspace(userId: string, workspaceId: string) {
   const workspace = (await db.select().from(workspaces).where(and(eq(workspaces.id, safeId(workspaceId)), eq(workspaces.userId, safeId(userId)))).limit(1))[0];
@@ -39,7 +48,8 @@ export class Runs {
   async launch(userId: string, sessionId: string, prompt: string) {
     const session = await ownedSession(userId, sessionId);
     await this.manager.leases.withLock(workspaceLock(session.workspaceId), async () => {
-      await ownedSession(userId, sessionId);
+      const current = await ownedSession(userId, sessionId);
+      const wasConfirmedBlank = current.confirmedBlank && current.firstMessageAt === null;
       if (await this.manager.leases.redis.exists(workspaceDeleted(session.workspaceId))) throw new HttpError(410, 'Workspace was deleted');
       const token = await this.manager.leases.acquire(sessionLock(sessionId));
       let markedRunning = false;
@@ -47,9 +57,21 @@ export class Runs {
         // Publish ownership of the busy lease before returning 202, so reaping cannot race startup.
         await this.manager.admitActivity(userId, 'active-agent-tasks', sessionId);
         await this.manager.leases.renew(sessionLock(sessionId), token);
-        await db.update(agentSessions).set({ status: 'running', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
+        // Clear the blank marker before publishing a user message. An interrupted
+        // metadata write must never make a conversation eligible for reuse.
+        await db.update(agentSessions).set({ status: 'running', confirmedBlank: false, lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.id, session.id));
         markedRunning = true;
         await publish(this.manager.leases.redis, sessionId, { type: 'user-message', text: prompt });
+        // Only a newly created draft has a known first-message time. A manual
+        // rename made before sending takes precedence over the automatic title.
+        await db.update(agentSessions).set({
+          ...(wasConfirmedBlank ? {
+            title: sql`coalesce(${agentSessions.title}, ${titleFromPrompt(prompt)})`,
+            firstMessageAt: sql`coalesce(${agentSessions.firstMessageAt}, now())`,
+          } : {}),
+          lastActivityAt: sql`now()`,
+          updatedAt: sql`now()`,
+        }).where(and(eq(agentSessions.id, session.id), eq(agentSessions.userId, userId)));
         await publish(this.manager.leases.redis, sessionId, { type: 'status', status: 'starting' });
         const execution: Execution = { userId, sessionId, token, controller: new AbortController(), promise: Promise.resolve(), cancelling: false, started: false };
         this.active.set(sessionId, execution);
@@ -58,14 +80,14 @@ export class Runs {
       } catch (error) {
         let durableFailure = false;
         try {
-          await publish(this.manager.leases.redis, sessionId, { type: 'error', message: 'The run could not be started' });
+          await publish(this.manager.leases.redis, sessionId, { type: 'error', code: 'RUN_START_FAILED', message: 'The run could not be started' });
           await publish(this.manager.leases.redis, sessionId, { type: 'status', status: 'error' });
           durableFailure = true;
         } catch (journalError) { this.log.error(journalError, 'Failed to publish start failure; stale-run recovery will retry'); }
         if (!markedRunning || durableFailure) {
           await this.manager.leases.clearBusy(userId, 'active-agent-tasks', sessionId);
           await this.manager.leases.release(sessionLock(sessionId), token);
-          await db.update(agentSessions).set({ status: 'error', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
+          await db.update(agentSessions).set({ status: 'error', lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.id, session.id));
         }
         throw error;
       }
@@ -109,7 +131,7 @@ export class Runs {
       if (!response.ok) await responseJson(response);
       if (!response.body) throw new Error('Runtime response contained no stream');
       for await (const event of readEvents(response.body)) {
-        await publish(leases.redis, sessionId, event);
+        await publish(leases.redis, sessionId, event.type === 'error' ? { ...event, code: event.code || runErrorCode(event.message) } : event);
         if (terminal(event)) {
           finalStatus = event.type === 'status' && event.status === 'error' ? 'error' : 'idle';
           terminalEvent = true;
@@ -125,7 +147,7 @@ export class Runs {
       const cancelled = execution.cancelling && !leaseFailure;
       const events: AgentEvent[] = cancelled
         ? [{ type: 'status', status: 'stopped' }]
-        : [{ type: 'error', message: error instanceof Error ? error.message : 'Agent execution failed' }, { type: 'status', status: 'error' }];
+        : [{ type: 'error', code: runErrorCode(error instanceof Error ? error.message : ''), message: error instanceof Error ? error.message : 'Agent execution failed' }, { type: 'status', status: 'error' }];
       for (const event of events) {
         try { await publish(leases.redis, sessionId, event); if (terminal(event)) durableTerminal = true; }
         catch (journalError) { this.log.error(journalError, 'Failed to publish terminal event; stale-run reconciliation will retry'); }
@@ -151,7 +173,7 @@ export class Runs {
         this.active.delete(sessionId);
         return;
       }
-      await db.update(agentSessions).set({ status: finalStatus, updatedAt: new Date() }).where(eq(agentSessions.dshSessionId, sessionId));
+      await db.update(agentSessions).set({ status: finalStatus, lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.dshSessionId, sessionId));
       await this.manager.touchRuntime(userId);
       await leases.clearBusy(userId, 'active-agent-tasks', sessionId);
       await leases.release(sessionLock(sessionId), token);
@@ -183,7 +205,7 @@ export class Runs {
       return { ok: true };
     }
     await publish(this.manager.leases.redis, sessionId, { type: 'status', status: 'stopped' });
-    await db.update(agentSessions).set({ status: 'idle', updatedAt: new Date() }).where(eq(agentSessions.dshSessionId, sessionId));
+    await db.update(agentSessions).set({ status: 'idle', lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.dshSessionId, sessionId));
     return { ok: true };
   }
 
@@ -201,9 +223,9 @@ export class Runs {
             await this.manager.mcp.revoke(session.userId, safeId(runId));
             await this.manager.leases.redis.del(mcpRunKey(session.dshSessionId));
           }
-          await publish(this.manager.leases.redis, session.dshSessionId, { type: 'error', message: 'Execution interrupted when its manager lease was lost. Your workspace files are preserved.' });
+          await publish(this.manager.leases.redis, session.dshSessionId, { type: 'error', code: 'RUN_INTERRUPTED', message: 'Execution interrupted when its manager lease was lost. Your workspace files are preserved.' });
           await publish(this.manager.leases.redis, session.dshSessionId, { type: 'status', status: 'error' });
-          await db.update(agentSessions).set({ status: 'error', updatedAt: new Date() }).where(eq(agentSessions.id, session.id));
+          await db.update(agentSessions).set({ status: 'error', lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.id, session.id));
           await this.manager.leases.clearBusy(session.userId, 'active-agent-tasks', session.dshSessionId);
         });
       } catch (error) {

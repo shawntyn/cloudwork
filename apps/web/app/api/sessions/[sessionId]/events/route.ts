@@ -79,7 +79,7 @@ export const GET = api(async request => {
       } catch (error) {
         if (!closed) {
           console.error('Event stream disconnected:', error);
-          await send(`data: ${JSON.stringify({type:'error',message:'Connection interrupted. Reconnecting…'})}\n\n`);
+          await send(`data: ${JSON.stringify({type:'error',code:'stream_interrupted',message:'Connection interrupted. Reconnecting…'})}\n\n`);
         }
       } finally {
         cleanup();

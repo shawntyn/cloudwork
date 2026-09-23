@@ -3,7 +3,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { api, errorMessage, type User, type Runtime } from "./client";
-export type IconName = "logo" | "plus" | "arrow" | "folder" | "file" | "chevron" | "close" | "refresh" | "trash" | "edit" | "save" | "stop" | "power" | "logout" | "code" | "check" | "terminal" | "alert" | "menu" | "message" | "plug" | "upload" | "download";
+import { useLocale } from "./locale";
+import type { LocalePreference, ThemePreference } from "./locale-core";
+export type IconName = "logo" | "plus" | "arrow" | "folder" | "file" | "chevron" | "close" | "refresh" | "trash" | "edit" | "save" | "stop" | "power" | "logout" | "code" | "check" | "terminal" | "alert" | "menu" | "message" | "plug" | "upload" | "download" | "settings";
 const paths: Record<IconName, React.ReactNode> = {
     logo: <><path d="m12 3 9 5v8l-9 5-9-5V8l9-5Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5v3"/></>,
     plus: <path d="M12 5v14M5 12h14"/>, arrow: <path d="M5 12h14m-6-6 6 6-6 6"/>,
@@ -24,6 +26,7 @@ const paths: Record<IconName, React.ReactNode> = {
     plug: <><path d="M8 2v6m8-6v6M5 8h14v3a7 7 0 0 1-14 0V8ZM12 18v4"/></>,
     upload: <><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></>,
     download: <><path d="M12 3v13m-5-5 5 5 5-5M4 18v3h16v-3"/></>,
+    settings: <><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M5.9 5.9l1.4 1.4m9.4 9.4 1.4 1.4M18.1 5.9l-1.4 1.4M7.3 16.7l-1.4 1.4"/><circle cx="12" cy="12" r="4"/></>,
 };
 export function Icon({ name, size = 18, className = "" }: {
     name: IconName;
@@ -35,10 +38,24 @@ export function Icon({ name, size = 18, className = "" }: {
 export function Brand() {
     return <Link href="/workspaces" className="brand"><span className="brand-mark"><Icon name="logo" size={24}/></span><span>cloud<span className="brand-light">work</span><span className="brand-dot">.</span></span></Link>;
 }
+export function AppearanceControls({ compact = false }: { compact?: boolean }) {
+    const { theme, localePreference, setTheme, setLocale, tr } = useLocale();
+    const [error, setError] = useState("");
+    return <details className={`preferences-menu ${compact ? "preferences-compact" : ""}`}>
+        <summary className="icon-button" aria-label={tr("外观与语言", "Appearance and language")} title={tr("外观与语言", "Appearance and language")}><Icon name="settings" size={18}/></summary>
+        <div className="preferences-popover">
+            <strong>{tr("偏好设置", "Preferences")}</strong>
+            <label>{tr("主题", "Theme")}<select aria-label={tr("主题", "Theme")} value={theme} onChange={event => { setError(""); void setTheme(event.target.value as ThemePreference).catch(() => setError(tr("主题偏好暂时无法同步，请重试。", "Could not sync theme preference. Try again."))); }}><option value="system">{tr("跟随系统", "System")}</option><option value="light">{tr("亮色", "Light")}</option><option value="dark">{tr("暗色", "Dark")}</option></select></label>
+            <label>{tr("语言", "Language")}<select aria-label={tr("语言", "Language")} value={localePreference} onChange={event => { setError(""); void setLocale(event.target.value as LocalePreference).catch(() => setError(tr("语言偏好暂时无法同步，请重试。", "Could not sync language preference. Try again."))); }}><option value="auto">{tr("自动检测", "Automatic")}</option><option value="zh-CN">简体中文</option><option value="en">English</option></select></label>
+            {error && <p className="preferences-error" role="alert">{error}</p>}
+        </div>
+    </details>;
+}
 export function Header({ user, children }: {
     user: User;
     children?: React.ReactNode;
 }) {
+    const { tr } = useLocale();
     const router = useRouter();
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
@@ -54,20 +71,22 @@ export function Header({ user, children }: {
             setBusy(false);
         }
     }
-    return <><header className="app-header"><Brand /><div className="header-center">{children}</div><div className="account"><Link className="icon-button" href="/settings/mcp" aria-label="MCP connection settings" title="MCP connections"><Icon name="plug"/></Link><span className="account-email">{user.email}</span><span className="avatar" title={user.name || user.email}>{(user.name || user.email).charAt(0).toUpperCase()}</span><button className="icon-button" aria-label="Sign out" title="Sign out" onClick={logout} disabled={busy}><Icon name="logout"/></button></div></header>{error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}</>;
+    return <><header className="app-header"><Brand /><div className="header-center">{children}</div><div className="account"><Link className="icon-button" href="/settings/mcp" aria-label={tr("MCP 连接设置", "MCP connection settings")} title={tr("MCP 连接", "MCP connections")}><Icon name="plug"/></Link><AppearanceControls/><span className="account-email">{user.email}</span><span className="avatar" title={user.name || user.email}>{(user.name || user.email).charAt(0).toUpperCase()}</span><button className="icon-button" aria-label={tr("退出登录", "Sign out")} title={tr("退出登录", "Sign out")} onClick={logout} disabled={busy}><Icon name="logout"/></button></div></header>{error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}</>;
 }
 export function ErrorBanner({ message, onDismiss, onRetry }: {
     message: string;
     onDismiss?: () => void;
     onRetry?: () => void;
 }) {
-    return <div className="error-banner" role="alert"><Icon name="alert" size={17}/><span>{message}</span>{onRetry && <button className="text-button" onClick={onRetry}>Retry</button>}{onDismiss && <button className="icon-button" aria-label="Dismiss error" onClick={onDismiss}><Icon name="close" size={16}/></button>}</div>;
+    const { tr } = useLocale();
+    return <div className="error-banner" role="alert"><Icon name="alert" size={17}/><span>{message}</span>{onRetry && <button className="text-button" onClick={onRetry}>{tr("重试", "Retry")}</button>}{onDismiss && <button className="icon-button" aria-label={tr("关闭错误提示", "Dismiss error")} onClick={onDismiss}><Icon name="close" size={16}/></button>}</div>;
 }
 export function LoadingScreen({ error, retry }: {
     error?: string;
     retry?: () => void;
 }) {
-    return <main className="loading-screen"><Brand />{error ? <ErrorBanner message={error} onRetry={retry}/> : <div className="loading-label"><span className="spinner"/>Opening your workspace…</div>}</main>;
+    const { tr } = useLocale();
+    return <main className="loading-screen"><Brand />{error ? <ErrorBanner message={error} onRetry={retry}/> : <div className="loading-label"><span className="spinner"/>{tr("正在打开工作空间…", "Opening your workspace…")}</div>}</main>;
 }
 export function Modal({ title, description, children, onClose, className = "" }: {
     title: string;
@@ -76,24 +95,26 @@ export function Modal({ title, description, children, onClose, className = "" }:
     onClose: () => void;
     className?: string;
 }) {
+    const { tr } = useLocale();
     const ref = useRef<HTMLDialogElement>(null);
     const titleId = useId();
     const descriptionId = useId();
     useEffect(() => { const dialog = ref.current; dialog?.showModal(); return () => dialog?.close(); }, []);
     return <dialog ref={ref} className={`modal ${className}`} aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === ref.current)
-        onClose(); }}><div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close dialog"><Icon name="close"/></button></div>{description && <p id={descriptionId} className="muted modal-description">{description}</p>}{children}</dialog>;
+        onClose(); }}><div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label={tr("关闭对话框", "Close dialog")}><Icon name="close"/></button></div>{description && <p id={descriptionId} className="muted modal-description">{description}</p>}{children}</dialog>;
 }
 export function RuntimeControl({ runtime, onChange, disabled = false }: {
     runtime: Runtime | null;
     onChange: (runtime: Runtime) => void;
     disabled?: boolean;
 }) {
+    const { tr } = useLocale();
     const [open, setOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const status = runtime?.status || "STARTING";
     async function action(value: "start" | "stop" | "remove") {
-        if (value === "remove" && !window.confirm("Remove your runtime container? Your workspace files and session data are kept. It will be recreated when you resume work."))
+        if (value === "remove" && !window.confirm(tr("重建运行环境？工作区文件和对话会保留，继续使用时会自动重新创建。", "Rebuild the runtime? Workspace files and conversations are kept. It will be recreated when you resume work.")))
             return;
         setBusy(true);
         setError("");
@@ -111,5 +132,6 @@ export function RuntimeControl({ runtime, onChange, disabled = false }: {
             setBusy(false);
         }
     }
-    return <div className="runtime-control"><button className="runtime-badge" aria-expanded={open} onClick={() => setOpen(!open)}><span className={`status-dot status-${status.toLowerCase()}`}/><span>{busy ? "Updating…" : !runtime ? "Checking…" : status.charAt(0) + status.slice(1).toLowerCase()}</span><Icon name="chevron" size={12} className={open ? "rotated" : "down"}/></button>{open && <div className="runtime-popover"><div className="eyebrow">YOUR RUNTIME</div><p>Shared by your workspaces. Files persist when the runtime stops or is removed.</p>{error && <ErrorBanner message={error}/>}<button disabled={busy || disabled} onClick={() => action("start")}><Icon name="power" size={16}/>Start / reconnect</button><button disabled={busy || disabled || !["RUNNING", "IDLE"].includes(status)} onClick={() => action("stop")}><Icon name="stop" size={16}/>Stop runtime</button><button disabled={busy || disabled || status === "REMOVED"} onClick={() => action("remove")}><Icon name="trash" size={16}/>Remove container</button>{disabled && <p className="small muted">Stop the active agent run first.</p>}</div>}</div>;
+    const statusLabels: Record<Runtime["status"], string> = { STARTING: tr("启动中", "Starting"), RUNNING: tr("运行中", "Running"), IDLE: tr("空闲", "Idle"), STOPPED: tr("已停止", "Stopped"), REMOVED: tr("未启动", "Not started"), ERROR: tr("出错", "Error") };
+    return <div className="runtime-control"><button className="runtime-badge" aria-expanded={open} onClick={() => setOpen(!open)}><span className={`status-dot status-${status.toLowerCase()}`}/><span>{busy ? tr("正在更新…", "Updating…") : !runtime ? tr("正在检查…", "Checking…") : statusLabels[status]}</span><Icon name="chevron" size={12} className={open ? "rotated" : "down"}/></button>{open && <div className="runtime-popover"><div className="eyebrow">{tr("运行环境", "RUNTIME")}</div><p>{tr("所有工作区共用此运行环境。停止或重建不会删除工作区文件。", "Shared by your workspaces. Files remain when the runtime stops or is rebuilt.")}</p>{error && <ErrorBanner message={error}/>}<button disabled={busy || disabled} onClick={() => action("start")}><Icon name="power" size={16}/>{tr("启动或重新连接", "Start or reconnect")}</button><button disabled={busy || disabled || !["RUNNING", "IDLE"].includes(status)} onClick={() => action("stop")}><Icon name="stop" size={16}/>{tr("停止运行环境", "Stop runtime")}</button><details className="runtime-advanced"><summary>{tr("高级操作", "Advanced actions")}</summary><button disabled={busy || disabled || status === "REMOVED"} onClick={() => action("remove")}><Icon name="trash" size={16}/>{tr("重建运行环境", "Rebuild runtime")}</button></details>{disabled && <p className="small muted">{tr("请先停止正在运行的 Agent。", "Stop the active agent run first.")}</p>}</div>}</div>;
 }

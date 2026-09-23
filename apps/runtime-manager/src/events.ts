@@ -13,7 +13,7 @@ export function parseEvent(value: unknown): AgentEvent {
   if (e.type === 'text-delta' && typeof e.text === 'string') return { type: 'text-delta', text: e.text };
   if (e.type === 'tool-start' && typeof e.id === 'string' && typeof e.name === 'string') return { type: 'tool-start', id: e.id, name: e.name, input: e.input };
   if (e.type === 'tool-result' && typeof e.id === 'string') return { type: 'tool-result', id: e.id, output: e.output };
-  if (e.type === 'error' && typeof e.message === 'string') return { type: 'error', message: e.message };
+  if (e.type === 'error' && typeof e.message === 'string') return { type: 'error', message: e.message, ...(typeof e.code === 'string' ? { code: e.code } : {}) };
   if (e.type === 'status' && ['starting', 'running', 'idle', 'stopped', 'error'].includes(String(e.status))) return { type: 'status', status: e.status as 'starting' | 'running' | 'idle' | 'stopped' | 'error' };
   throw new Error('Unknown runtime event');
 }

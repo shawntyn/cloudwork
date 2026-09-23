@@ -2,6 +2,11 @@ import { FILE_TRANSFER_LIMITS } from "@cloud-work/protocol";
 
 export type UploadFile = { path: string; file: File };
 export type UploadSelection = { files: UploadFile[]; directories: string[] };
+export class FileTransferValidationError extends Error {
+    constructor(readonly code: "unsafe_path" | "path_conflict" | "duplicate_path" | "file_too_large" | "batch_too_large" | "too_many_entries" | "empty_selection", readonly detail: string, message: string) {
+        super(message);
+    }
+}
 
 export function formatFileSize(bytes: number) {
     if (bytes < 1024) return `${bytes} B`;
@@ -12,7 +17,7 @@ export function formatFileSize(bytes: number) {
 
 function checkPath(path: string) {
     if (!path || path.startsWith("/") || /[\\\x00-\x1f\x7f]/.test(path) || path.split("/").some(part => !part || part === "." || part === "..")) {
-        throw new Error(`Cannot upload an unsafe path: ${path}`);
+        throw new FileTransferValidationError("unsafe_path", path, `Cannot upload an unsafe path: ${path}`);
     }
 }
 
@@ -23,7 +28,7 @@ export function prepareUploadSelection(files: UploadFile[], directories: string[
     let bytes = 0;
     function addDirectory(path: string) {
         checkPath(path);
-        if (entries.get(path) === "file") throw new Error(`A file and folder use the same path: ${path}`);
+        if (entries.get(path) === "file") throw new FileTransferValidationError("path_conflict", path, `A file and folder use the same path: ${path}`);
         entries.set(path, "directory");
         folders.add(path);
     }
@@ -41,16 +46,16 @@ export function prepareUploadSelection(files: UploadFile[], directories: string[
         checkPath(relativePath);
         const path = prefix + relativePath;
         checkPath(path);
-        if (entries.has(path)) throw new Error(`The selection contains a duplicate path: ${path}`);
-        if (file.size > FILE_TRANSFER_LIMITS.maxFileBytes) throw new Error(`${file.name} exceeds the ${formatFileSize(FILE_TRANSFER_LIMITS.maxFileBytes)} file limit.`);
+        if (entries.has(path)) throw new FileTransferValidationError("duplicate_path", path, `The selection contains a duplicate path: ${path}`);
+        if (file.size > FILE_TRANSFER_LIMITS.maxFileBytes) throw new FileTransferValidationError("file_too_large", file.name, `${file.name} exceeds the ${formatFileSize(FILE_TRANSFER_LIMITS.maxFileBytes)} file limit.`);
         bytes += file.size;
-        if (bytes > FILE_TRANSFER_LIMITS.maxBatchBytes) throw new Error(`Upload batches must be no larger than ${formatFileSize(FILE_TRANSFER_LIMITS.maxBatchBytes)}.`);
+        if (bytes > FILE_TRANSFER_LIMITS.maxBatchBytes) throw new FileTransferValidationError("batch_too_large", "", `Upload batches must be no larger than ${formatFileSize(FILE_TRANSFER_LIMITS.maxBatchBytes)}.`);
         parents(path);
         entries.set(path, "file");
         return { path, file };
     });
-    if (entries.size > FILE_TRANSFER_LIMITS.maxEntries) throw new Error(`Choose at most ${FILE_TRANSFER_LIMITS.maxEntries.toLocaleString()} files and folders per upload.`);
-    if (!entries.size) throw new Error("No files or folders were selected. The folder picker cannot include empty folders; drag the folder here instead.");
+    if (entries.size > FILE_TRANSFER_LIMITS.maxEntries) throw new FileTransferValidationError("too_many_entries", "", `Choose at most ${FILE_TRANSFER_LIMITS.maxEntries.toLocaleString()} files and folders per upload.`);
+    if (!entries.size) throw new FileTransferValidationError("empty_selection", "", "No files or folders were selected. The folder picker cannot include empty folders; drag the folder here instead.");
     return { files: prepared, directories: [...folders] };
 }
 
@@ -63,14 +68,14 @@ export async function droppedFiles(items: DataTransferItem[], fallback: File[]):
     let count = 0;
     let bytes = 0;
     async function visit(entry: FileSystemEntry, parent: string) {
-        if (++count > FILE_TRANSFER_LIMITS.maxEntries) throw new Error(`Choose at most ${FILE_TRANSFER_LIMITS.maxEntries.toLocaleString()} files and folders per upload.`);
+        if (++count > FILE_TRANSFER_LIMITS.maxEntries) throw new FileTransferValidationError("too_many_entries", "", `Choose at most ${FILE_TRANSFER_LIMITS.maxEntries.toLocaleString()} files and folders per upload.`);
         const path = parent ? `${parent}/${entry.name}` : entry.name;
         checkPath(path);
         if (entry.isFile) {
             const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
-            if (file.size > FILE_TRANSFER_LIMITS.maxFileBytes) throw new Error(`${file.name} exceeds the ${formatFileSize(FILE_TRANSFER_LIMITS.maxFileBytes)} file limit.`);
+            if (file.size > FILE_TRANSFER_LIMITS.maxFileBytes) throw new FileTransferValidationError("file_too_large", file.name, `${file.name} exceeds the ${formatFileSize(FILE_TRANSFER_LIMITS.maxFileBytes)} file limit.`);
             bytes += file.size;
-            if (bytes > FILE_TRANSFER_LIMITS.maxBatchBytes) throw new Error(`Upload batches must be no larger than ${formatFileSize(FILE_TRANSFER_LIMITS.maxBatchBytes)}.`);
+            if (bytes > FILE_TRANSFER_LIMITS.maxBatchBytes) throw new FileTransferValidationError("batch_too_large", "", `Upload batches must be no larger than ${formatFileSize(FILE_TRANSFER_LIMITS.maxBatchBytes)}.`);
             files.push({ path, file });
         } else if (entry.isDirectory) {
             directories.push(path);

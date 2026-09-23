@@ -15,6 +15,20 @@
       "when": 1789896957576,
       "tag": "0001_furry_obadiah_stane",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790138489102,
+      "tag": "0002_rainy_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790139991195,
+      "tag": "0003_warm_martin_li",
+      "breakpoints": true
     }
   ]
 }

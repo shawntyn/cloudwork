@@ -5,7 +5,8 @@ import { api, errorMessage, type FileEntry } from "./client";
 import { ErrorBanner, Icon, Modal } from "./ui";
 import { FileUploads } from "./file-upload";
 import { FilePreview } from "./file-preview";
-import { downloadUrl, isTextFile } from "./file-transfer";
+import { downloadUrl, isSafeImageFile, isTextFile } from "./file-transfer";
+import { useLocale } from "./locale";
 type EditFile = {
     path: string;
     original: string;
@@ -15,13 +16,15 @@ type FileAction = {
     kind: "file" | "directory" | "rename";
     path: string;
 };
-export function FileBrowser({ workspaceId, revision, open, onClose }: {
+export function FileBrowser({ workspaceId, revision, open, onClose, closeRequestRef }: {
     workspaceId: string;
     revision: number;
     open: boolean;
     onClose: () => void;
+    closeRequestRef?: React.RefObject<(() => void) | null>;
 }) {
     const endpoint = `/api/workspaces/${workspaceId}/files`;
+    const { tr, locale } = useLocale();
     const [tree, setTree] = useState<Record<string, FileEntry[]>>({});
     const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
     const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
@@ -39,36 +42,94 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
     const [mutating, setMutating] = useState(false);
     const [saved, setSaved] = useState(false);
     const [narrow, setNarrow] = useState(false);
+    const [activeTab, setActiveTab] = useState<"files" | "preview">("files");
     const drawerRef = useRef<HTMLElement>(null);
     const drawerTriggerRef = useRef<HTMLElement | null>(null);
+    const restoreFocusRef = useRef(false);
+    const previousTabRef = useRef(activeTab);
+    const closeDrawerRef = useRef<() => void>(() => {});
     const saveRef = useRef<() => void>(() => { });
+    const expandedRef = useRef(expanded);
+    expandedRef.current = expanded;
     const dirty = !!editor && editor.content !== editor.original;
     useEffect(() => {
-        const media = window.matchMedia("(max-width: 760px)");
+        const media = window.matchMedia("(max-width: 1100px)");
         const sync = () => setNarrow(media.matches);
         sync();
         media.addEventListener("change", sync);
         return () => media.removeEventListener("change", sync);
     }, []);
     useEffect(() => {
-        if (!narrow || !open) return;
+        if (!open) return;
         const activeElement = document.activeElement;
-        if (activeElement instanceof HTMLElement && !drawerRef.current?.contains(activeElement)) {
-            drawerTriggerRef.current = activeElement;
-            drawerRef.current?.querySelector<HTMLButtonElement>('button[aria-label="Close files"]')?.focus();
+        if (!drawerRef.current?.contains(activeElement)) {
+            drawerTriggerRef.current = activeElement instanceof HTMLElement && activeElement !== document.body
+                ? activeElement : document.querySelector<HTMLButtonElement>(".cw-files-open");
+            if (narrow) drawerRef.current?.querySelector<HTMLButtonElement>('[data-close-files]')?.focus();
         }
     }, [narrow, open]);
+    useEffect(() => {
+        if (open || !restoreFocusRef.current) return;
+        restoreFocusRef.current = false;
+        const frame = window.requestAnimationFrame(() => {
+            const trigger = drawerTriggerRef.current?.isConnected ? drawerTriggerRef.current : document.querySelector<HTMLButtonElement>(".cw-files-open");
+            if (trigger && !trigger.closest("[inert]")) trigger.focus();
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [open]);
+    useEffect(() => {
+        if (previousTabRef.current === activeTab) return;
+        previousTabRef.current = activeTab;
+        if (open) drawerRef.current?.querySelector<HTMLButtonElement>(`[data-file-tab="${activeTab}"]`)?.focus();
+    }, [activeTab, open]);
+    useEffect(() => {
+        if (!narrow || !open) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (document.querySelector("dialog[open]")) return;
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                closeDrawerRef.current();
+                return;
+            }
+            if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
+            const drawer = drawerRef.current;
+            if (!drawer) return;
+            const focusable = Array.from(drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'))
+                .filter(element => element.tabIndex >= 0 && !element.closest("[hidden], [inert]") && element.getClientRects().length > 0 && window.getComputedStyle(element).visibility !== "hidden");
+            const first = focusable[0];
+            const last = focusable.at(-1);
+            if (!first || !last) {
+                event.preventDefault();
+                drawer.focus();
+            } else if (!drawer.contains(document.activeElement)) {
+                event.preventDefault();
+                (event.shiftKey ? last : first).focus();
+            } else if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => document.removeEventListener("keydown", onKeyDown, true);
+    }, [narrow, open]);
     function closeDrawer() {
-        if (narrow) drawerTriggerRef.current?.focus();
+        if (!discardAllowed()) return;
+        restoreFocusRef.current = true;
         onClose();
     }
+    closeDrawerRef.current = closeDrawer;
+    if (closeRequestRef) closeRequestRef.current = closeDrawer;
     const load = useCallback(async (path: string) => {
         setLoadingPaths(paths => new Set([...paths, path]));
         try {
             const data = await api<{
                 entries: FileEntry[];
             }>(`${endpoint}?path=${encodeURIComponent(path)}`);
-            setTree(current => ({ ...current, [path]: data.entries.sort((a, b) => Number(b.type === "directory") - Number(a.type === "directory") || a.name.localeCompare(b.name)) }));
+            setTree(current => ({ ...current, [path]: data.entries.sort((a, b) => Number(b.type === "directory") - Number(a.type === "directory") || a.name.localeCompare(b.name, locale)) }));
         }
         catch (err) {
             setError(errorMessage(err));
@@ -76,8 +137,10 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         finally {
             setLoadingPaths(paths => { const next = new Set(paths); next.delete(path); return next; });
         }
-    }, [endpoint]);
-    useEffect(() => { void load(""); }, [load, revision]);
+    }, [endpoint, locale]);
+    useEffect(() => {
+        for (const path of expandedRef.current) void load(path);
+    }, [load, revision]);
     useEffect(() => {
         if (!dirty)
             return;
@@ -86,7 +149,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
             if (!link || link.hasAttribute("download") || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
                 return;
-            if (link.getAttribute("href") !== window.location.pathname && !window.confirm("Discard unsaved changes to this file?")) {
+            if (link.getAttribute("href") !== window.location.pathname && !window.confirm(tr("放弃此文件尚未保存的更改？", "Discard unsaved changes to this file?"))) {
                 event.preventDefault();
                 event.stopPropagation();
             }
@@ -94,7 +157,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         window.addEventListener("beforeunload", beforeUnload);
         document.addEventListener("click", beforeNavigation, true);
         return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", beforeNavigation, true); };
-    }, [dirty]);
+    }, [dirty, tr]);
     useEffect(() => {
         function saveKey(event: KeyboardEvent) { if ((event.metaKey || event.ctrlKey) && event.key === "s") {
             event.preventDefault();
@@ -103,7 +166,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         window.addEventListener("keydown", saveKey);
         return () => window.removeEventListener("keydown", saveKey);
     }, []);
-    function discardAllowed() { return !dirty || window.confirm("Discard unsaved changes to this file?"); }
+    function discardAllowed() { return !dirty || window.confirm(tr("放弃此文件尚未保存的更改？", "Discard unsaved changes to this file?")); }
     async function openEntry(entry: FileEntry) {
         if (entry.type === "directory") {
             setSelected(entry);
@@ -117,10 +180,14 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             return;
         }
         if (entry.type === "symlink") {
-            setError("Symbolic links cannot be opened from the file browser.");
+            setError(tr("无法在文件浏览器中打开符号链接。", "Symbolic links cannot be opened from the file browser."));
             return;
         }
-        if (entry.path === editor?.path || !discardAllowed())
+        if (entry.path === editor?.path || entry.path === preview?.path) {
+            setActiveTab("preview");
+            return;
+        }
+        if (!discardAllowed())
             return;
         setSelected(entry);
         setError("");
@@ -128,6 +195,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             setEditor(null);
             setPreview(entry);
             setEditing(false);
+            setActiveTab("preview");
             return;
         }
         setLoadingFile(true);
@@ -140,12 +208,14 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             setPreview(null);
             setEditing(false);
             setEditor({ path: entry.path, original: data.content, content: data.content });
+            setActiveTab("preview");
         }
         catch (err) {
             // A text extension may still contain binary or non-UTF-8 data.
             setEditor(null);
             setPreview(entry);
-            if (!/binary|utf.?8|text file/i.test(errorMessage(err))) setError(errorMessage(err));
+            setError(errorMessage(err));
+            setActiveTab("preview");
         }
         finally {
             setLoadingFile(false);
@@ -155,7 +225,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         if (!editor || saving || !dirty)
             return;
         if (new TextEncoder().encode(editor.content).byteLength > FILE_TRANSFER_LIMITS.maxTextBytes) {
-            setError("Text files must be no larger than 10 MiB to save in the editor.");
+            setError(tr("文本文件超过 10 MiB，无法在编辑器中保存。", "Text files must be no larger than 10 MiB to save in the editor."));
             return;
         }
         setSaving(true);
@@ -175,31 +245,32 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
         }
     }
     saveRef.current = () => { void save(); };
-    function beginAction(kind: FileAction["kind"]) {
-        const path = kind === "rename" ? selected?.path || "" : selected?.type === "directory" ? `${selected.path}/` : "";
+    function beginAction(kind: FileAction["kind"], entry: FileEntry | null = selected) {
+        const path = kind === "rename" ? entry?.path || "" : entry?.type === "directory" ? entry.path : entry?.path.split("/").slice(0, -1).join("/") || "";
         setAction({ kind, path });
-        setActionValue(path);
+        setActionValue(kind === "rename" ? path.split("/").at(-1) || "" : "");
         setActionError("");
     }
     async function performAction(event: React.FormEvent) {
         event.preventDefault();
         if (!action)
             return;
-        const path = actionValue.trim();
-        if (!path || path.startsWith("/") || path.split("/").some(part => !part || part === ".." || part === ".")) {
-            setActionError("Use a relative path, such as src/index.ts. Empty segments, . and .. are not allowed.");
+        const name = actionValue.trim();
+        if (!name || name === "." || name === ".." || /[/\\\x00-\x1f\x7f]/.test(name)) {
+            setActionError(tr("请输入有效名称；名称不能包含斜杠、反斜杠或控制字符。", "Enter a valid name without slashes, backslashes, or control characters."));
             return;
         }
+        const parent = action.kind === "rename" ? action.path.split("/").slice(0, -1).join("/") : action.path;
+        const path = parent ? `${parent}/${name}` : name;
         setMutating(true);
         setActionError("");
         try {
             if (action.kind === "file") {
-                const parent = path.split("/").slice(0, -1).join("/");
                 const existing = await api<{
                     entries: FileEntry[];
                 }>(`${endpoint}?path=${encodeURIComponent(parent)}`);
                 if (existing.entries.some(entry => entry.name === path.split("/").at(-1)))
-                    throw new Error("An entry already exists at this path. Choose another name.");
+                    throw new Error(tr("此位置已有同名项目，请换一个名称。", "An entry already exists here. Choose another name."));
                 await api(`${endpoint}/content`, { method: "PUT", body: JSON.stringify({ path, content: "" }) });
             }
             else
@@ -210,13 +281,18 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
                 setSelected(null);
             }
             setAction(null);
-            setTree({});
-            setExpanded(new Set([""]));
-            await load("");
+            if (action.kind === "rename") {
+                setTree({});
+                setExpanded(new Set([""]));
+                await load("");
+            } else {
+                await load(parent);
+            }
             if (action.kind === "file") {
                 setPreview(null);
                 setEditing(true);
                 setEditor({ path, original: "", content: "" });
+                setActiveTab("preview");
             }
         }
         catch (err) {
@@ -226,22 +302,22 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             setMutating(false);
         }
     }
-    async function remove() {
-        if (!selected || !window.confirm(`Permanently delete “${selected.path}”${selected.type === "directory" ? " and everything inside it" : ""}?`))
+    async function remove(entry: FileEntry | null = selected) {
+        if (!entry || !window.confirm(tr(`永久删除“${entry.path}”${entry.type === "directory" ? "及其全部内容" : ""}？`, `Permanently delete “${entry.path}”${entry.type === "directory" ? " and everything inside it" : ""}?`)))
             return;
-        if (editor && (editor.path === selected.path || editor.path.startsWith(`${selected.path}/`)) && !discardAllowed())
+        if (editor && (editor.path === entry.path || editor.path.startsWith(`${entry.path}/`)) && !discardAllowed())
             return;
         setMutating(true);
         setError("");
         try {
-            await api(`${endpoint}?path=${encodeURIComponent(selected.path)}`, { method: "DELETE" });
-            if (editor && (editor.path === selected.path || editor.path.startsWith(`${selected.path}/`)))
+            await api(`${endpoint}?path=${encodeURIComponent(entry.path)}`, { method: "DELETE" });
+            if (editor && (editor.path === entry.path || editor.path.startsWith(`${entry.path}/`)))
                 setEditor(null);
-            if (preview && (preview.path === selected.path || preview.path.startsWith(`${selected.path}/`))) setPreview(null);
+            if (preview && (preview.path === entry.path || preview.path.startsWith(`${entry.path}/`))) setPreview(null);
             setSelected(null);
-            setTree({});
-            setExpanded(new Set([""]));
-            await load("");
+            const parent = entry.path.split("/").slice(0, -1).join("/");
+            setExpanded(current => new Set([...current].filter(path => path !== entry.path && !path.startsWith(`${entry.path}/`))));
+            await load(parent);
         }
         catch (err) {
             setError(errorMessage(err));
@@ -250,46 +326,71 @@ export function FileBrowser({ workspaceId, revision, open, onClose }: {
             setMutating(false);
         }
     }
-    function renderDirectory(path: string, level: number): React.ReactNode {
-        return tree[path]?.map(entry => <div key={entry.path}><button disabled={loadingFile || uploading} className={`file-row ${selected?.path === entry.path ? "selected" : ""}`} style={{ paddingLeft: 15 + level * 15 }} onClick={() => void openEntry(entry)} title={entry.path}><span className="file-chevron">{entry.type === "directory" && <Icon name="chevron" size={12} className={expanded.has(entry.path) ? "down" : ""}/>}</span><Icon name={entry.type === "directory" ? "folder" : "file"} size={16}/><span>{entry.name}</span>{entry.type === "symlink" && <span className="muted">↗</span>}</button>{entry.type === "directory" && expanded.has(entry.path) && <div role="group">{loadingPaths.has(entry.path) ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Loading…</div> : tree[entry.path]?.length === 0 ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>Empty folder</div> : renderDirectory(entry.path, level + 1)}</div>}</div>);
+    function previewKind(entry: FileEntry) {
+        if (entry.type === "directory") return "";
+        if (entry.type === "symlink") return tr("不可打开", "Unavailable");
+        if (isSafeImageFile(entry.path) && entry.size <= FILE_TRANSFER_LIMITS.maxImagePreviewBytes) return tr("可预览", "Preview");
+        if (isTextFile(entry.path) && entry.size <= FILE_TRANSFER_LIMITS.maxTextBytes) return tr("可预览", "Preview");
+        return tr("需下载", "Download");
     }
+    function renderDirectory(path: string, level: number): React.ReactNode {
+        return tree[path]?.map(entry => <div key={entry.path}>
+            <div className={`file-entry ${selected?.path === entry.path ? "selected" : ""}`} style={{ paddingLeft: 8 + level * 15 }}>
+                <button disabled={loadingFile || uploading} className="file-row" onClick={() => void openEntry(entry)} title={entry.path}>
+                    <span className="file-chevron">{entry.type === "directory" && <Icon name="chevron" size={12} className={expanded.has(entry.path) ? "down" : ""}/>}</span>
+                    <Icon name={entry.type === "directory" ? "folder" : "file"} size={16}/>
+                    <span className="file-entry-name">{entry.name}</span>
+                    {entry.type !== "directory" && <span className="file-kind-badge">{previewKind(entry)}</span>}
+                </button>
+                <details className="file-row-menu"><summary aria-label={tr(`${entry.name} 的操作`, `Actions for ${entry.name}`)} title={tr("更多操作", "More actions")}>···</summary><div>
+                    {entry.type !== "symlink" && <a download href={downloadUrl(endpoint, entry.path, entry.type === "directory")}>{tr(entry.type === "directory" ? "下载 ZIP" : "下载", entry.type === "directory" ? "Download ZIP" : "Download")}</a>}
+                    <button disabled={mutating || uploading} onClick={() => { setSelected(entry); beginAction("rename", entry); }}>{tr("重命名", "Rename")}</button>
+                    <button className="danger" disabled={mutating || uploading} onClick={() => { setSelected(entry); void remove(entry); }}>{tr("删除", "Delete")}</button>
+                </div></details>
+            </div>
+            {entry.type === "directory" && expanded.has(entry.path) && <div role="group">{loadingPaths.has(entry.path) ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>{tr("正在加载…", "Loading…")}</div> : tree[entry.path]?.length === 0 ? <div className="tree-loading" style={{ paddingLeft: 35 + level * 15 }}>{tr("空文件夹", "Empty folder")}</div> : renderDirectory(entry.path, level + 1)}</div>}
+        </div>);
+    }
+    const activeFile = editor?.path || preview?.path;
     return <>
-        <aside ref={drawerRef} inert={narrow && !open} aria-hidden={narrow && !open ? true : undefined} className={`files-panel ${open ? "mobile-open" : ""}`}>
-            <div className="panel-heading"><div><Icon name="folder" size={17}/><h2>Files</h2></div><div className="file-toolbar">
-                <a className="icon-button" download href={downloadUrl(endpoint, "", true)} title="Download workspace as ZIP" aria-label="Download workspace as ZIP"><Icon name="download" size={15}/></a>
-                <button className="icon-button" title="Refresh files" aria-label="Refresh files" onClick={() => { setError(""); for (const path of expanded) void load(path); }}><Icon name="refresh" size={15}/></button>
-                <button className="icon-button mobile-only" aria-label="Close files" onClick={closeDrawer}><Icon name="close" size={17}/></button>
-            </div></div>
-            <div className="file-actions"><button disabled={uploading || mutating} onClick={() => { if (discardAllowed()) beginAction("file"); }} title="New file"><Icon name="file" size={15}/>New file</button><button disabled={uploading || mutating} onClick={() => beginAction("directory")} title="New folder"><Icon name="plus" size={15}/>Folder</button></div>
+        <aside ref={drawerRef} tabIndex={-1} inert={!open} aria-hidden={!open} className={`files-panel file-workbench ${open ? "mobile-open" : ""}`}>
+            <div className="file-workbench-tabs" role="group" aria-label={tr("文件工作台视图", "File workbench views")}>
+                <button data-file-tab="files" aria-pressed={activeTab === "files"} className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}><Icon name="folder" size={15}/>{tr("文件", "Files")}</button>
+                {activeFile && <button data-file-tab="preview" aria-pressed={activeTab === "preview"} className={activeTab === "preview" ? "active" : ""} title={activeFile} onClick={() => setActiveTab("preview")}><Icon name="file" size={15}/><span>{activeFile.split("/").at(-1)}</span>{dirty && <span className="unsaved-dot"/>}</button>}
+                <button data-close-files className="icon-button file-workbench-close" aria-label={tr("关闭文件工作台", "Close file workbench")} onClick={closeDrawer}><Icon name="close" size={17}/></button>
+            </div>
             {error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}
-            <FileUploads key={endpoint} endpoint={endpoint} disabled={saving || mutating || loadingFile} destination={selected?.type === "directory" ? selected.path : ""} onRoot={() => setSelected(null)} onBusy={setUploading} beforeUpload={() => {
-                if (saving || mutating || loadingFile) return false;
-                if (!discardAllowed()) return false;
-                setEditor(null); setPreview(null); return true;
-            }} onChanged={() => { for (const path of expanded) void load(path); }}>
-                <div className="file-tree" aria-label="Workspace files">{loadingPaths.has("") && !tree[""] ? <div className="tree-loading">Loading files…</div> : tree[""]?.length === 0 ? <div className="files-empty"><Icon name="folder" size={26}/><p>No files yet</p><span>Drop files or folders here,<br/>or ask your agent to start building.</span></div> : renderDirectory("", 0)}</div>
-            </FileUploads>
-            {selected && <div className="selected-file-actions"><span title={selected.path}>{selected.name}</span>
-                {selected.type !== "symlink" && <a className="icon-button" download href={downloadUrl(endpoint, selected.path, selected.type === "directory")} aria-label={`Download ${selected.name}${selected.type === "directory" ? " as ZIP" : ""}`} title={selected.type === "directory" ? "Download folder as ZIP" : "Download file"}><Icon name="download" size={15}/></a>}
-                <button className="icon-button" aria-label={`Rename ${selected.name}`} title="Rename" disabled={mutating || uploading} onClick={() => beginAction("rename")}><Icon name="edit" size={15}/></button>
-                <button className="icon-button danger" aria-label={`Delete ${selected.name}`} title="Delete" disabled={mutating || uploading} onClick={() => void remove()}><Icon name="trash" size={15}/></button>
-            </div>}
-            <div className="files-footer"><Icon name="code" size={14}/><span>Persistent workspace files</span></div>
+            <div className="file-tree-pane" hidden={activeTab !== "files"}>
+                <div className="panel-heading"><div><Icon name="folder" size={17}/><h2>{tr("工作区文件", "Workspace files")}</h2></div><div className="file-toolbar">
+                    <a className="icon-button" download href={downloadUrl(endpoint, "", true)} title={tr("下载工作区 ZIP", "Download workspace as ZIP")} aria-label={tr("下载工作区 ZIP", "Download workspace as ZIP")}><Icon name="download" size={15}/></a>
+                    <button className="icon-button" title={tr("刷新文件", "Refresh files")} aria-label={tr("刷新文件", "Refresh files")} onClick={() => { setError(""); for (const path of expandedRef.current) void load(path); }}><Icon name="refresh" size={15}/></button>
+                </div></div>
+                <div className="file-actions"><button disabled={uploading || mutating} onClick={() => { if (discardAllowed()) beginAction("file"); }}><Icon name="file" size={15}/>{tr("新建文件", "New file")}</button><button disabled={uploading || mutating} onClick={() => beginAction("directory")}><Icon name="plus" size={15}/>{tr("新建文件夹", "New folder")}</button></div>
+                <FileUploads key={endpoint} endpoint={endpoint} disabled={saving || mutating || loadingFile} destination={selected?.type === "directory" ? selected.path : ""} onRoot={() => setSelected(null)} onBusy={setUploading} beforeUpload={() => {
+                    if (saving || mutating || loadingFile || !discardAllowed()) return false;
+                    setEditor(null); setPreview(null); setActiveTab("files"); return true;
+                }} onChanged={() => { for (const path of expandedRef.current) void load(path); }}>
+                    <div className="file-tree" aria-label={tr("工作区文件", "Workspace files")}>{loadingPaths.has("") && !tree[""] ? <div className="tree-loading">{tr("正在加载文件…", "Loading files…")}</div> : tree[""]?.length === 0 ? <div className="files-empty"><Icon name="folder" size={26}/><p>{tr("还没有文件", "No files yet")}</p><span>{tr("拖入文件或文件夹，或让 Agent 开始创建。", "Drop files or folders here, or ask your agent to start building.")}</span></div> : renderDirectory("", 0)}</div>
+                </FileUploads>
+                <div className="files-footer"><Icon name="code" size={14}/><span>{tr("工作区文件会持久保存", "Workspace files are persistent")}</span></div>
+            </div>
+            <div className="file-preview-pane" hidden={activeTab !== "preview"}>
+                {editor && <section className="editor-panel" aria-label={editing ? tr("文件编辑器", "File editor") : tr("文本预览", "Text preview")}>
+                    <div className="editor-heading"><div><Icon name="file" size={16}/><span title={editor.path}>{editor.path}</span>{dirty && <span className="unsaved-dot" title={tr("未保存的更改", "Unsaved changes")}/>}</div><button className="icon-button" disabled={saving} aria-label={tr("关闭文件", "Close file")} onClick={() => { if (discardAllowed()) { setEditor(null); setActiveTab("files"); } }}><Icon name="close" size={17}/></button></div>
+                    <div className="editor-meta"><span>UTF-8 · {editor.content.split("\n").length} {tr("行", "lines")} · {editing ? tr("编辑中", "Editing") : tr("只读", "Read only")}</span><div className="file-editor-actions">
+                        <a className="icon-button" download href={downloadUrl(endpoint, editor.path)} aria-label={tr("下载当前文件", "Download current file")} title={tr("下载已保存文件", "Download saved file")}><Icon name="download" size={14}/></a>
+                        {editing ? <><button className="button button-small button-secondary" disabled={saving} onClick={() => { if (discardAllowed()) { setEditor({ ...editor, content: editor.original }); setEditing(false); } }}>{tr("预览", "Preview")}</button><button className="button button-small button-secondary" onClick={() => void save()} disabled={!dirty || saving}><Icon name={saved && !dirty ? "check" : "save"} size={14}/>{saving ? tr("保存中…", "Saving…") : saved && !dirty ? tr("已保存", "Saved") : tr("保存", "Save")}</button></> : <button className="button button-small button-secondary" onClick={() => setEditing(true)}><Icon name="edit" size={14}/>{tr("编辑", "Edit")}</button>}
+                    </div></div>
+                    <textarea className="code-editor" aria-label={`${editing ? tr("编辑", "Edit") : tr("预览", "Preview")} ${editor.path}`} readOnly={!editing} spellCheck={false} value={editor.content} onChange={event => { setEditor({ ...editor, content: event.target.value }); setSaved(false); }}/>
+                    <div className="editor-footer"><span>{dirty ? tr("未保存的更改", "Unsaved changes") : editing ? tr("所有更改已保存", "All changes saved") : tr("只读预览", "Read-only preview")}</span><span>{editing ? tr("按 ⌘ / Ctrl S 保存", "⌘ / Ctrl S to save") : tr("选择“编辑”以修改", "Choose Edit to make changes")}</span></div>
+                </section>}
+                {preview && <FilePreview key={preview.path} entry={preview} endpoint={endpoint} onClose={() => { setPreview(null); setActiveTab("files"); }}/>}
+            </div>
         </aside>
-        {editor && <section className="editor-panel" aria-label={editing ? "File editor" : "Text preview"}>
-            <div className="editor-heading"><div><Icon name="file" size={16}/><span title={editor.path}>{editor.path}</span>{dirty && <span className="unsaved-dot" title="Unsaved changes"/>}</div><button className="icon-button" disabled={saving} aria-label="Close file" onClick={() => { if (discardAllowed()) setEditor(null); }}><Icon name="close" size={17}/></button></div>
-            <div className="editor-meta"><span>UTF-8 · {editor.content.split("\n").length} lines · {editing ? "Editing" : "Read only"}</span><div className="file-editor-actions">
-                <a className="icon-button" download href={downloadUrl(endpoint, editor.path)} aria-label="Download current file" title="Download saved file"><Icon name="download" size={14}/></a>
-                {editing ? <><button className="button button-small button-secondary" disabled={saving} onClick={() => { if (discardAllowed()) { setEditor({ ...editor, content: editor.original }); setEditing(false); } }}>Preview</button><button className="button button-small button-secondary" onClick={() => void save()} disabled={!dirty || saving}><Icon name={saved && !dirty ? "check" : "save"} size={14}/>{saving ? "Saving…" : saved && !dirty ? "Saved" : "Save"}</button></> : <button className="button button-small button-secondary" onClick={() => setEditing(true)}><Icon name="edit" size={14}/>Edit</button>}
-            </div></div>
-            <textarea className="code-editor" aria-label={`${editing ? "Edit" : "Preview"} ${editor.path}`} readOnly={!editing} spellCheck={false} value={editor.content} onChange={event => { setEditor({ ...editor, content: event.target.value }); setSaved(false); }}/>
-            <div className="editor-footer"><span>{dirty ? "Unsaved changes" : editing ? "All changes saved" : "Read-only preview"}</span><span>{editing ? "⌘ / Ctrl S to save" : "Choose Edit to make changes"}</span></div>
-        </section>}
-        {preview && <FilePreview key={preview.path} entry={preview} endpoint={endpoint} onClose={() => setPreview(null)}/>}
-        {action && <Modal title={action.kind === "file" ? "New file" : action.kind === "directory" ? "New folder" : "Rename entry"} description="Use a path relative to this workspace." onClose={() => { if (!mutating) setAction(null); }}><form onSubmit={performAction}>
-            <label>{action.kind === "rename" ? "New path" : "Path"}<input autoFocus required value={actionValue} onChange={event => setActionValue(event.target.value)} placeholder={action.kind === "directory" ? "src/components" : "src/index.ts"}/></label>
+        {action && <Modal title={action.kind === "file" ? tr("新建文件", "New file") : action.kind === "directory" ? tr("新建文件夹", "New folder") : tr("重命名", "Rename")} description={tr(`位置：${action.kind === "rename" ? action.path.split("/").slice(0, -1).join("/") || "/" : action.path || "/"}`, `Location: ${action.kind === "rename" ? action.path.split("/").slice(0, -1).join("/") || "/" : action.path || "/"}`)} onClose={() => { if (!mutating) setAction(null); }}><form onSubmit={performAction}>
+            <label>{tr("名称", "Name")}<input autoFocus required value={actionValue} onChange={event => setActionValue(event.target.value)} placeholder={action.kind === "directory" ? tr("例如 components", "e.g. components") : tr("例如 index.ts", "e.g. index.ts")}/></label>
             {actionError && <ErrorBanner message={actionError}/>}
-            <div className="modal-actions"><button className="button button-secondary" type="button" disabled={mutating} onClick={() => setAction(null)}>Cancel</button><button className="button button-primary" disabled={mutating}>{mutating ? "Saving…" : action.kind === "rename" ? "Rename" : "Create"}</button></div>
+            <div className="modal-actions"><button className="button button-secondary" type="button" disabled={mutating} onClick={() => setAction(null)}>{tr("取消", "Cancel")}</button><button className="button button-primary" disabled={mutating}>{mutating ? tr("保存中…", "Saving…") : action.kind === "rename" ? tr("重命名", "Rename") : tr("创建", "Create")}</button></div>
         </form></Modal>}
     </>;
 }

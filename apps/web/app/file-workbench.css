@@ -1,0 +1,145 @@
+.cw-file-dock .files-panel.file-workbench {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  order: initial;
+  transform: none;
+  box-shadow: none;
+  border: 0;
+  background: var(--panel);
+}
+
+.file-workbench-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 48px;
+  min-height: 48px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.file-workbench-tabs > button[aria-pressed] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 46%;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-workbench-tabs > button[aria-pressed].active {
+  background: var(--elevated);
+  color: var(--text);
+}
+
+.file-workbench-tabs > button[aria-pressed] span:not(.unsaved-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-workbench-tabs .file-workbench-close { margin-left: auto; }
+.file-tree-pane, .file-preview-pane { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.file-tree-pane[hidden], .file-preview-pane[hidden] { display: none !important; }
+.file-tree-pane .panel-heading { min-height: 43px; height: 43px; }
+.file-tree-pane .file-actions { padding: 9px 12px; }
+.file-tree-pane .file-transfer-zone { min-height: 0; }
+
+.file-entry {
+  display: flex;
+  align-items: center;
+  position: relative;
+  width: 100%;
+  padding-right: 7px;
+}
+
+.file-entry:hover, .file-entry:focus-within { background: var(--elevated); }
+.file-entry.selected { background: var(--panel-soft); }
+.file-entry .file-row {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 3px;
+  background: transparent;
+}
+.file-entry .file-row:hover { background: transparent; }
+.file-entry .file-entry-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-entry .file-kind-badge { flex: none; font-size: 9px; color: var(--muted); }
+.file-entry .file-chevron { width: 11px; }
+.file-row-menu { flex: none; position: relative; }
+.file-row-menu > summary {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+}
+.file-row-menu > summary::-webkit-details-marker { display: none; }
+.file-row-menu > summary:hover, .file-row-menu[open] > summary { background: var(--panel-soft); color: var(--text); }
+.file-row-menu > div {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  top: 29px;
+  min-width: 132px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 32px #0003;
+}
+.file-row-menu > div > a, .file-row-menu > div > button {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+}
+.file-row-menu > div > a:hover, .file-row-menu > div > button:hover { background: var(--elevated); }
+.file-row-menu > div > .danger { color: var(--red); }
+.file-workbench .files-footer { margin-top: auto; }
+
+.cw-file-dock .file-workbench .editor-panel {
+  position: relative;
+  inset: auto;
+  order: initial;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 0;
+  border-left: 0;
+  box-shadow: none;
+  background: var(--panel);
+}
+.cw-file-dock .file-workbench .code-editor { width: 100%; background: var(--panel); color: var(--text); }
+.cw-file-dock .file-workbench .editor-meta { gap: 8px; }
+.cw-file-dock .file-workbench .editor-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cw-file-dock .file-workbench .file-editor-actions { gap: 4px; }
+.cw-file-dock .file-workbench .file-editor-actions .button { padding: 5px 7px; }
+
+@media (max-width: 760px) {
+  .cw-file-dock .files-panel.file-workbench { width: 100%; }
+  .file-entry .file-row { min-height: 40px; }
+}

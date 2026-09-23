@@ -4,7 +4,7 @@ export type AgentEvent =
   | { type: 'tool-start'; id: string; name: string; input?: unknown }
   | { type: 'tool-result'; id: string; output?: unknown }
   | { type: 'status'; status: 'starting' | 'running' | 'idle' | 'stopped' | 'error' }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; code?: string }
   | { type: 'user-message'; text: string };
 export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink'; size: number };
 

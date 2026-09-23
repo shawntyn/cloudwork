@@ -4,7 +4,8 @@ import { db, workspaces, agentSessions } from '@cloud-work/database';
 import { and, eq } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { ZodError, z } from 'zod';
-export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
+export class ApiError extends Error { constructor(public status: number, message: string, public code?: string) { super(message); } }
+const statusCode: Record<number, string> = { 400: 'INVALID_REQUEST', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CONFLICT', 413: 'PAYLOAD_TOO_LARGE', 415: 'UNSUPPORTED_MEDIA_TYPE', 429: 'RATE_LIMITED', 503: 'SERVICE_UNAVAILABLE' };
 export const idSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/);
 let client: Redis | undefined;
 export function redis() { return client ??= new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: 2, lazyConnect: true }); }
@@ -24,10 +25,10 @@ export function api(fn: (request: Request) => Promise<Response>, options: { cont
   return async (request: Request) => {
     try { safeOrigin(request, options.contentType); return await fn(request); }
     catch (error) {
-      if (error instanceof ApiError) return Response.json({ error: error.message }, { status: error.status });
-      if (error instanceof ZodError || error instanceof SyntaxError) return Response.json({ error: 'Invalid request data' }, { status: 400 });
+      if (error instanceof ApiError) return Response.json({ error: error.message, code: error.code ?? statusCode[error.status] ?? 'REQUEST_FAILED' }, { status: error.status });
+      if (error instanceof ZodError || error instanceof SyntaxError) return Response.json({ error: 'Invalid request data', code: 'INVALID_REQUEST' }, { status: 400 });
       console.error('API request failed:', error);
-      return Response.json({ error: 'The request could not be completed. Please try again.' }, { status: 500 });
+      return Response.json({ error: 'The request could not be completed. Please try again.', code: 'INTERNAL_ERROR' }, { status: 500 });
     }
   };
 }
@@ -49,18 +50,18 @@ export async function body(request: Request, limit = 3 * 1024 * 1024) {
 }
 export function validatePath(value: string, allowRoot = false) {
   try { return relativeParts(value,allowRoot); }
-  catch { throw new ApiError(400, 'Path must be relative and stay inside the workspace'); }
+  catch { throw new ApiError(400, 'Path must be relative and stay inside the workspace', 'INVALID_PATH'); }
 }
 export async function ownedWorkspace(userId: string, id: string) {
   idSchema.parse(id);
   const [workspace] = await db.select().from(workspaces).where(and(eq(workspaces.id,id), eq(workspaces.userId,userId))).limit(1);
-  if (!workspace) throw new ApiError(404, 'Workspace not found');
+  if (!workspace) throw new ApiError(404, 'Workspace not found', 'WORKSPACE_NOT_FOUND');
   return workspace;
 }
 export async function ownedSession(userId: string, id: string) {
   idSchema.parse(id);
   const [session] = await db.select().from(agentSessions).where(and(eq(agentSessions.id,id), eq(agentSessions.userId,userId))).limit(1);
-  if (!session) throw new ApiError(404, 'Session not found');
+  if (!session) throw new ApiError(404, 'Session not found', 'SESSION_NOT_FOUND');
   await ownedWorkspace(userId, session.workspaceId);
   return session;
 }
