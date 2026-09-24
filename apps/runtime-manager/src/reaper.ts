@@ -1,8 +1,10 @@
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { db, runtimeInstances } from '@cloud-work/database';
+import { db, runtimeInstances, workspaces } from '@cloud-work/database';
+import { and, asc, gt, isNotNull } from 'drizzle-orm';
 import type { RuntimeManager } from './lifecycle.js';
 import type { Runs } from './runs.js';
+import { purgeWorkspace, reconcileTrashedWorkspace, WORKSPACE_RETENTION_MS } from './workspace-trash.js';
 
 export function reaperAction(input: { running: boolean; busy: boolean; lastActiveAt: number; stoppedAt: number | null }, now: number, idleMs: number, removeMs: number): 'stop' | 'remove' | null {
   if (input.busy) return null;
@@ -14,9 +16,23 @@ export function reaperAction(input: { running: boolean; busy: boolean; lastActiv
 export async function startReaper(manager: RuntimeManager, runs: Runs, log: { error: (error: unknown, message?: string) => void }) {
   const connection = new Redis(manager.config.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('cloud-work-runtime-reaper', { connection });
+  let purgeCursor: string | null = null;
   const worker = new Worker('cloud-work-runtime-reaper', async () => {
     // A Redis error is deliberately propagated: unknown busy state must never trigger recycling.
     await runs.recoverStale();
+    const cutoff = new Date(Date.now() - WORKSPACE_RETENTION_MS);
+    const findTrashed = (cursor: string | null) => db.select({ id: workspaces.id, userId: workspaces.userId, deletedAt: workspaces.deletedAt, purgeStartedAt: workspaces.purgeStartedAt }).from(workspaces)
+      .where(and(isNotNull(workspaces.deletedAt), cursor ? gt(workspaces.id, cursor) : undefined))
+      .orderBy(asc(workspaces.id)).limit(100);
+    let trashed = await findTrashed(purgeCursor);
+    if (!trashed.length && purgeCursor) { purgeCursor = null; trashed = await findTrashed(null); }
+    purgeCursor = trashed.length === 100 ? trashed.at(-1)!.id : null;
+    for (const workspace of trashed) {
+      try {
+        if (workspace.purgeStartedAt || (workspace.deletedAt && workspace.deletedAt <= cutoff)) await purgeWorkspace(manager, workspace.userId, workspace.id);
+        else await reconcileTrashedWorkspace(manager, workspace.userId, workspace.id);
+      } catch (error) { log.error(error, `Workspace Trash reconciliation failed for ${workspace.id}; it will be retried`); }
+    }
     const rows = await db.select().from(runtimeInstances);
     for (const candidate of rows) {
       if (candidate.status === 'REMOVED') continue;

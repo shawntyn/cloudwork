@@ -3,13 +3,13 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, errorMessage, useUser, type Runtime, type Session, type Workspace } from "./client";
+import { api, errorMessage, useUser, type Session, type Workspace } from "./client";
 import { Conversation } from "./conversation";
 import { FileBrowser } from "./file-browser";
 import { trapDialogFocus } from "./focus";
 import { useLocale } from "./locale";
 import { WorkspaceMcp } from "./workspace-mcp";
-import { ErrorBanner, Header, Icon, LoadingScreen, Modal, RuntimeControl } from "./ui";
+import { ErrorBanner, Header, Icon, LoadingScreen, Modal } from "./ui";
 
 type ListResponse = { sessions: Session[]; nextCursor?: string | null };
 const activity = (session: Session) => session.lastActivityAt || session.updatedAt || session.createdAt;
@@ -18,14 +18,13 @@ const sorted = (sessions: Session[]) => [...sessions].sort((a, b) => Number(!!b.
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     const { user, error: authError, retry } = useUser();
     const { tr, locale } = useLocale();
-    const sessionLabel = (session: Session) => session.title || (session.hasMessages ? tr("历史对话", "Previous conversation") : tr("新对话", "New conversation"));
+    const sessionLabel = (session: Session) => session.title || (session.hasMessages ? tr("对话 · ", "Conversation · ") + new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(activity(session))) : tr("新对话", "New conversation"));
     const router = useRouter();
     const params = useSearchParams();
     const requestedId = params.get("session");
     const draft = params.get("draft") === "1";
     const [workspace, setWorkspace] = useState<Workspace | null>(null);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-    const [runtime, setRuntime] = useState<Runtime | null>(null);
     const [sessions, setSessions] = useState<Session[]>([]);
     const [sidebarSessions, setSidebarSessions] = useState<Session[]>([]);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -51,6 +50,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     const [saving, setSaving] = useState(false);
     const [expanded, setExpanded] = useState<Set<string>>(new Set([workspaceId]));
     const listRequest = useRef(0);
+    const sidebarContext = useRef("");
+    const loadedBeyondFirst = useRef(false);
     const navTriggerRef = useRef<HTMLButtonElement>(null);
     const navCloseRef = useRef<HTMLButtonElement>(null);
     const navRef = useRef<HTMLElement>(null);
@@ -58,7 +59,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
     const active = useMemo(() => draft ? null : requestedId ? sessions.find(item => item.id === requestedId) || null : sorted(sessions.filter(item => !item.archivedAt))[0] || null, [draft, requestedId, sessions]);
     const invalidSelection = !loading && workspace?.id === workspaceId && !!requestedId && !active;
-    const anyRunning = [...sessions, ...sidebarSessions].some(item => ["starting", "running"].includes(statuses[item.id] || item.status));
+    const anyRunning = sessions.some(item => ["starting", "running"].includes(statuses[item.id] || item.status));
     const href = (session: Session) => "/workspaces/" + (session.workspaceId || workspaceId) + "?session=" + encodeURIComponent(session.id);
 
     const refreshSessions = useCallback(async () => {
@@ -80,13 +81,17 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             if (cursor) queryParams.set("cursor", cursor);
             const data = await api<ListResponse>("/api/sessions?" + queryParams);
             if (request !== listRequest.current) return;
-            setSidebarSessions(current => cursor ? [...current, ...data.sessions.filter(item => !current.some(existing => existing.id === item.id))] : data.sessions);
+            const context = `${archived}:${search}`;
+            const sameContext = sidebarContext.current === context;
+            setSidebarSessions(current => cursor ? [...current, ...data.sessions.filter(item => !current.some(existing => existing.id === item.id))] : sameContext && loadedBeyondFirst.current ? [...data.sessions, ...current.filter(item => !data.sessions.some(fresh => fresh.id === item.id))] : data.sessions);
+            if (!cursor) { if (!sameContext) loadedBeyondFirst.current = false; sidebarContext.current = context; }
+            else loadedBeyondFirst.current = true;
             setStatuses(current => {
                 const next = { ...current };
                 for (const session of data.sessions) next[session.id] = session.status;
                 return next;
             });
-            setNextCursor(data.nextCursor || null);
+            if (cursor || !sameContext || !loadedBeyondFirst.current) setNextCursor(data.nextCursor || null);
         } catch (err) {
             if (request === listRequest.current) setSidebarError(errorMessage(err));
         } finally {
@@ -98,12 +103,11 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
         setError("");
         try {
             const [detail, workspaceData, sessionData] = await Promise.all([
-                api<{ workspace: Workspace; runtime: Runtime }>("/api/workspaces/" + workspaceId),
+                api<{ workspace: Workspace }>("/api/workspaces/" + workspaceId),
                 api<{ workspaces: Workspace[] }>("/api/workspaces"),
                 api<{ sessions: Session[] }>("/api/workspaces/" + workspaceId + "/sessions"),
             ]);
             setWorkspace(detail.workspace);
-            setRuntime(detail.runtime);
             setWorkspaces(workspaceData.workspaces);
             setSessions(sessionData.sessions);
             setStatuses(Object.fromEntries(sessionData.sessions.map(session => [session.id, session.status])));
@@ -119,12 +123,27 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     useEffect(() => {
         if (!workspace) return;
         const timer = window.setInterval(() => {
-            void api<{ runtime: Runtime }>("/api/runtime").then(data => setRuntime(data.runtime)).catch(() => {});
             void refreshSessions().catch(() => {});
+            void api<{ workspaces: Workspace[] }>("/api/workspaces").then(data => setWorkspaces(data.workspaces)).catch(() => {});
             setSidebarRevision(value => value + 1);
         }, 15000);
         return () => window.clearInterval(timer);
     }, [workspace, refreshSessions]);
+    useEffect(() => {
+        if (!filesOpen) return;
+        setFilesRevision(value => value + 1);
+    }, [filesOpen]);
+    useEffect(() => {
+        if (!filesOpen || !anyRunning) return;
+        const timer = window.setInterval(() => setFilesRevision(value => value + 1), 4000);
+        return () => window.clearInterval(timer);
+    }, [filesOpen, anyRunning]);
+    useEffect(() => {
+        const refreshFiles = () => { if (document.visibilityState === "visible") setFilesRevision(value => value + 1); };
+        window.addEventListener("focus", refreshFiles);
+        document.addEventListener("visibilitychange", refreshFiles);
+        return () => { window.removeEventListener("focus", refreshFiles); document.removeEventListener("visibilitychange", refreshFiles); };
+    }, []);
     useEffect(() => {
         if (!loading && workspace && !requestedId && !draft && active) router.replace(href(active), { scroll: false });
     }, [loading, workspace, requestedId, draft, active, router]);
@@ -167,7 +186,6 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
     const complete = useCallback(() => {
         setFilesRevision(value => value + 1);
-        void api<{ runtime: Runtime }>("/api/runtime").then(data => setRuntime(data.runtime)).catch(() => {});
         void refreshSessions().catch(() => {});
         setSidebarRevision(value => value + 1);
     }, [refreshSessions]);
@@ -194,8 +212,9 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     function newConversation() {
         const focus = () => window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".cw-agent-panel .composer textarea")?.focus());
         if (creating) return;
-        if (draft || (active && !active.hasMessages)) { focus(); setNavOpen(false); return; }
-        const reusable = sorted(sessions.filter(item => !item.hasMessages && !item.archivedAt))[0];
+        const reusableDraft = (session: Session) => session.confirmedBlank && !session.hasMessages && session.firstMessageAt === null && !session.archivedAt && session.status === "idle";
+        if (draft || (active && reusableDraft(active))) { focus(); setNavOpen(false); return; }
+        const reusable = sorted(sessions.filter(reusableDraft))[0];
         if (reusable) select(reusable);
         else router.push("/workspaces/" + workspaceId + "?draft=1", { scroll: false });
         setNavOpen(false);
@@ -208,6 +227,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             const body = change === "rename" ? { title } : change === "pin" ? { pinned: !session.pinnedAt } : { archived: !session.archivedAt };
             const data = await api<{ session: Session }>("/api/sessions/" + session.id, { method: "PATCH", body: JSON.stringify(body) });
             setSessions(current => current.map(item => item.id === session.id ? data.session : item));
+            setSidebarSessions(current => current.map(item => item.id === session.id ? data.session : item).filter(item => archived ? !!item.archivedAt : !item.archivedAt));
             setSidebarRevision(value => value + 1);
             if (change === "archive" && session.id === active?.id && !session.archivedAt) {
                 const next = sorted(sessions.filter(item => item.id !== session.id && !item.archivedAt))[0];
@@ -253,18 +273,19 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     if (!user) return <LoadingScreen error={authError} retry={retry}/>;
     return <div className="ide cw-app"><div className="cw-header-wrap" inert={(filesOpen && mobile) || (navOpen && small)}><Header user={user}><span className="header-divider"/><Link href="/workspaces" className="breadcrumb">{tr("工作区", "Workspaces")}</Link><Icon name="chevron" size={13}/><span className="current-workspace">{workspace?.name || tr("正在打开工作区", "Opening workspace")}</span></Header></div>
         {loading ? <div className="workspace-loading"><span className="spinner"/><h2>{tr("正在准备工作区", "Preparing your workspace")}</h2><p className="muted">{tr("正在恢复对话和文件。", "Restoring conversations and files.")}</p></div> : !workspace ? <div className="workspace-loading"><ErrorBanner message={error || tr("无法打开此工作区。", "This workspace could not be opened.")} onRetry={load}/><Link className="button button-secondary" href="/workspaces">{tr("返回工作区", "Back to workspaces")}</Link></div> : <>
-        <div className="ide-toolbar cw-topbar" inert={(filesOpen && mobile) || (navOpen && small)}><div className="ide-toolbar-title"><button ref={navTriggerRef} className="icon-button cw-nav-toggle" aria-label={tr("打开导航", "Open navigation")} aria-expanded={navOpen} aria-controls="workspace-navigation" onClick={() => setNavOpen(true)}><Icon name="menu"/></button><span className="workspace-mini-icon"><Icon name="folder" size={17}/></span><span>{workspace.name}</span><Icon name="chevron" size={12}/><strong className="cw-topbar-session">{draft ? tr("新对话草稿", "New conversation draft") : title}</strong></div><div className="ide-toolbar-actions"><button className="button button-small cw-files-open" onClick={() => setFilesOpen(true)} aria-label={tr("打开文件工作台", "Open file workbench")} aria-expanded={filesOpen} aria-controls="file-workbench"><Icon name="folder" size={15}/><span>{tr("文件", "Files")}</span></button><button className="button button-small mcp-toolbar-button" aria-label={tr("工作区连接", "Workspace connections")} aria-haspopup="dialog" onClick={() => setMcpOpen(true)}><Icon name="plug" size={15}/><span>{tr("连接", "Connections")}</span></button><RuntimeControl runtime={runtime} onChange={value => { setRuntime(value); if (["RUNNING", "IDLE"].includes(value.status)) setFilesRevision(revision => revision + 1); }} disabled={anyRunning}/></div></div>
+        <div className="ide-toolbar cw-topbar" inert={(filesOpen && mobile) || (navOpen && small)}><div className="ide-toolbar-title"><button ref={navTriggerRef} className="icon-button cw-nav-toggle" aria-label={tr("打开导航", "Open navigation")} aria-expanded={navOpen} aria-controls="workspace-navigation" onClick={() => setNavOpen(true)}><Icon name="menu"/></button><Icon name="message" size={17}/><strong>{tr("对话", "Conversation")}</strong></div><div className="ide-toolbar-actions"><button className="button button-small cw-files-open" onClick={() => setFilesOpen(true)} aria-label={tr("打开文件工作台", "Open file workbench")} aria-expanded={filesOpen} aria-controls="file-workbench"><Icon name="folder" size={15}/><span>{tr("文件", "Files")}</span></button><button className="button button-small mcp-toolbar-button" aria-label={tr("此工作区连接", "This workspace's connections")} aria-haspopup="dialog" onClick={() => setMcpOpen(true)}><Icon name="plug" size={15}/><span>{tr("此工作区连接", "Workspace connections")}</span></button></div></div>
         {error && <div inert={(filesOpen && mobile) || (navOpen && small)}><ErrorBanner message={error} onDismiss={() => setError("")}/></div>}
+        {!workspaces.some(item => item.id === workspaceId) && <div className="cw-workspace-gone" role="alert">{tr("此工作区已移入回收站。", "This workspace was moved to Trash.")} <Link href="/workspaces">{tr("前往工作区管理", "Open workspace management")}</Link></div>}
         <div className="ide-body cw-body">
             {navOpen && <button className="cw-nav-scrim" aria-label={tr("关闭导航", "Close navigation")} onClick={closeNavigation}/>}
             <aside ref={navRef} id="workspace-navigation" className={"cw-sidebar " + (navOpen ? "is-open" : "")} inert={(filesOpen && mobile) || (small && !navOpen)} aria-hidden={small && !navOpen} role={small && navOpen ? "dialog" : undefined} aria-modal={small && navOpen ? true : undefined} aria-label={tr("工作区与对话", "Workspaces and conversations")}>
                 <div className="cw-sidebar-head"><span className="cw-sidebar-caption">{tr("工作区", "WORKSPACES")}</span><Link href="/workspaces" className="icon-button" aria-label={tr("查看所有工作区", "View all workspaces")}><Icon name="arrow" size={16}/></Link><button ref={navCloseRef} className="icon-button cw-sidebar-close" aria-label={tr("关闭导航", "Close navigation")} onClick={closeNavigation}><Icon name="close" size={16}/></button></div>
                 <button className="cw-new-chat" onClick={newConversation} disabled={creating}><Icon name="plus" size={17}/>{tr("新对话", "New conversation")}</button>
-                <label className="cw-search"><span className="sr-only">{tr("搜索工作区或对话标题", "Search workspace or conversation titles")}</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tr("搜索工作区或对话…", "Search workspaces or conversations…")}/></label>
+                <label className="cw-search"><span className="sr-only">{tr("搜索所有工作区和对话标题", "Search titles across all workspaces and conversations")}</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tr("搜索所有工作区和对话…", "Search all workspaces and conversations…")}/></label>
                 <div className="cw-sidebar-filter"><button className={!archived ? "active" : ""} onClick={() => setArchived(false)}>{tr("最近", "Recent")}</button><button className={archived ? "active" : ""} onClick={() => setArchived(true)}>{tr("已归档", "Archived")}</button></div>
                 <div className="cw-sidebar-list">{sidebarError && <ErrorBanner message={sidebarError} onRetry={() => void refreshSidebar()}/>}
-                    {grouped.length === 0 && !sidebarBusy && <p className="cw-sidebar-empty">{query ? tr("没有匹配的工作区或对话。", "No matching workspaces or conversations.") : tr("还没有对话。", "No conversations yet.")}</p>}
-                    {grouped.map(group => <section className="cw-workspace-group" key={group.workspace.id}><div className="cw-workspace-row"><button className="cw-group-toggle" onClick={() => setExpanded(current => { const next = new Set(current); if (next.has(group.workspace.id)) next.delete(group.workspace.id); else next.add(group.workspace.id); return next; })} aria-label={tr("切换对话列表", "Toggle conversation list")} aria-expanded={expanded.has(group.workspace.id)}><Icon name="chevron" size={12} className={expanded.has(group.workspace.id) ? "down" : ""}/></button><Link className={group.workspace.id === workspaceId ? "current" : ""} href={"/workspaces/" + group.workspace.id} onClick={() => setNavOpen(false)}><Icon name="folder" size={15}/><span>{group.workspace.name}</span></Link><span className="cw-group-count">{group.sessions.length}</span></div>{expanded.has(group.workspace.id) && <div className="cw-session-list">{group.sessions.map(session => <div className={"cw-session-row " + (active?.id === session.id ? "selected" : "")} key={session.id}><button className="cw-session-link" onClick={() => select(session)} title={sessionLabel(session)}><span className={"status-dot status-" + (["starting", "running"].includes(statuses[session.id] || session.status) ? "running" : "idle")}/><span>{sessionLabel(session)}</span>{["starting", "running"].includes(statuses[session.id] || session.status) && <span className="cw-running-pill">{tr("运行中", "Running")}</span>}{session.pinnedAt && <span className="cw-pin-mark" aria-label={tr("已置顶", "Pinned")}>◆</span>}</button><details className="cw-session-menu"><summary aria-label={tr("对话操作", "Conversation actions")}>···</summary><div><button onClick={() => { setRenaming(session); setNewTitle(session.title || ""); }}>{tr("重命名", "Rename")}</button><button onClick={() => void changeSession(session, "pin")} disabled={saving}>{session.pinnedAt ? tr("取消置顶", "Unpin") : tr("置顶", "Pin")}</button><button onClick={() => void changeSession(session, "archive")} disabled={saving}>{session.archivedAt ? tr("取消归档", "Unarchive") : tr("归档", "Archive")}</button></div></details></div>)}{group.sessions.length === 0 && <span className="cw-group-empty">{archived ? tr("没有已归档对话", "No archived conversations") : tr("没有对话", "No conversations")}</span>}</div>}</section>)}
+                    {grouped.length === 0 && !sidebarBusy && !sidebarError && <p className="cw-sidebar-empty">{query ? tr("没有匹配的工作区或对话。", "No matching workspaces or conversations.") : tr("还没有对话。", "No conversations yet.")}</p>}
+                    {grouped.map(group => <section className="cw-workspace-group" key={group.workspace.id}><div className="cw-workspace-row"><button className="cw-group-toggle" onClick={() => setExpanded(current => { const next = new Set(current); if (next.has(group.workspace.id)) next.delete(group.workspace.id); else next.add(group.workspace.id); return next; })} aria-label={tr("切换对话列表", "Toggle conversation list")} aria-expanded={expanded.has(group.workspace.id)}><Icon name="chevron" size={12} className={expanded.has(group.workspace.id) ? "down" : ""}/></button><Link className={group.workspace.id === workspaceId ? "current" : ""} href={"/workspaces/" + group.workspace.id} onClick={() => setNavOpen(false)}><Icon name="folder" size={15}/><span>{group.workspace.name}</span></Link></div>{expanded.has(group.workspace.id) && <div className="cw-session-list">{group.sessions.map(session => <div className={"cw-session-row " + (active?.id === session.id ? "selected" : "")} key={session.id}><button className="cw-session-link" onClick={() => select(session)} title={sessionLabel(session)}>{["starting", "running"].includes(statuses[session.id] || session.status) && <span className="status-dot status-running"/>}<span className="cw-session-title">{sessionLabel(session)}</span>{["starting", "running"].includes(statuses[session.id] || session.status) && <span className="cw-running-pill">{tr("运行中", "Running")}</span>}{session.pinnedAt && <span className="cw-pin-mark" aria-label={tr("已置顶", "Pinned")}>◆</span>}</button><details className="cw-session-menu"><summary aria-label={tr("对话操作", "Conversation actions")}>···</summary><div><button onClick={() => { setRenaming(session); setNewTitle(session.title || ""); }}>{tr("重命名", "Rename")}</button><button onClick={() => void changeSession(session, "pin")} disabled={saving}>{session.pinnedAt ? tr("取消置顶", "Unpin") : tr("置顶", "Pin")}</button><button onClick={() => void changeSession(session, "archive")} disabled={saving}>{session.archivedAt ? tr("取消归档", "Unarchive") : tr("归档", "Archive")}</button></div></details></div>)}{group.sessions.length === 0 && <span className="cw-group-empty">{archived ? tr("没有已归档对话", "No archived conversations") : tr("没有对话", "No conversations")}</span>}</div>}</section>)}
                     {nextCursor && <button className="cw-load-more" disabled={sidebarBusy} onClick={() => void refreshSidebar(nextCursor)}>{sidebarBusy ? tr("加载中…", "Loading…") : tr("加载更多", "Load more")}</button>}
                 </div><div className="cw-sidebar-footer"><Link href="/workspaces">{tr("管理工作区", "Manage workspaces")}</Link><Link href="/settings/mcp">{tr("连接设置", "Connection settings")}</Link></div>
             </aside>

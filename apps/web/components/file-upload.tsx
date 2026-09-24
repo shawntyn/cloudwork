@@ -6,9 +6,9 @@ import { ErrorBanner, Icon } from "./ui";
 import { droppedFiles, FileTransferValidationError, formatFileSize, prepareUploadSelection, type UploadSelection, type UploadFile } from "./file-transfer";
 import { useLocale } from "./locale";
 
-type QueueFile = UploadFile & { status: "pending" | "uploading" | "done" | "skipped" | "failed"; resultPath?: string };
+type QueueFile = UploadFile & { status: "pending" | "uploading" | "done" | "skipped" | "failed"; resultPath?: string; error?: string };
 type ConflictChoice = "replace" | "rename" | "skip" | "cancel";
-type Operation = { cancelled: boolean; xhr: XMLHttpRequest | null; batchId: string | null; controller: AbortController };
+type Operation = { cancelled: boolean; xhr: XMLHttpRequest | null; batchId: string | null; controller: AbortController; conflictPolicy: Exclude<ConflictChoice, "cancel"> | null };
 class UploadError extends Error {
     constructor(message: string, readonly status: number) { super(message); }
 }
@@ -107,7 +107,8 @@ export function FileUploads({ endpoint, destination, onRoot, onChanged, beforeUp
         return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", beforeNavigation, true); };
     }, [busy, tr]);
 
-    function chooseConflict(choice: ConflictChoice) {
+    function chooseConflict(choice: ConflictChoice, applyToRemaining = false) {
+        if (applyToRemaining && activeRef.current && choice !== "cancel") activeRef.current.conflictPolicy = choice;
         conflictRef.current?.(choice);
         conflictRef.current = null;
         setConflictPath("");
@@ -122,7 +123,7 @@ export function FileUploads({ endpoint, destination, onRoot, onChanged, beforeUp
     }
     async function run(files: QueueFile[], folders: string[]) {
         if (activeRef.current) return;
-        const operation: Operation = { cancelled: false, xhr: null, batchId: null, controller: new AbortController() };
+        const operation: Operation = { cancelled: false, xhr: null, batchId: null, controller: new AbortController(), conflictPolicy: null };
         activeRef.current = operation;
         setBusy(true); callbacks.current.onBusy(true);
         setError(""); setNotice(""); setProgress({ path: "", bytes: 0 });
@@ -135,7 +136,7 @@ export function FileUploads({ endpoint, destination, onRoot, onChanged, beforeUp
             operation.batchId = manifest.id;
             for (const item of remaining) {
                 if (operation.cancelled || !mounted.current) break;
-                item.status = "uploading"; setQueue([...current]);
+                item.status = "uploading"; item.error = undefined; setQueue([...current]);
                 let mode: "error" | "replace" | "rename" = "error";
                 while (!operation.cancelled) {
                     setProgress({ path: item.path, bytes: 0 });
@@ -147,12 +148,13 @@ export function FileUploads({ endpoint, destination, onRoot, onChanged, beforeUp
                     } catch (uploadError) {
                         if (operation.cancelled) break;
                         if (uploadError instanceof UploadError && uploadError.status === 409) {
+                            if (mode !== "error") { item.status = "failed"; item.error = uploadError.message; setQueue([...current]); throw uploadError; }
                             setProgress({ path: item.path, bytes: 0 });
-                            const choice = await new Promise<ConflictChoice>(resolve => { conflictRef.current = resolve; setConflictPath(item.path); });
+                            const choice = operation.conflictPolicy ?? await new Promise<ConflictChoice>(resolve => { conflictRef.current = resolve; setConflictPath(item.path); });
                             if (choice === "skip") { item.status = "skipped"; setQueue([...current]); break; }
                             if (choice === "cancel") break;
                             mode = choice;
-                        } else { item.status = "failed"; setQueue([...current]); throw uploadError; }
+                        } else { item.status = "failed"; item.error = displayError(uploadError); setQueue([...current]); throw uploadError; }
                     }
                 }
             }
@@ -219,9 +221,10 @@ export function FileUploads({ endpoint, destination, onRoot, onChanged, beforeUp
         {(queue.length > 0 || directories.length > 0 || notice || busy) && <section className="file-upload-progress" aria-label={tr("文件上传", "File uploads")}>
             <div className="file-upload-summary"><strong>{busy ? conflictPath ? tr("选择如何处理重名文件", "Choose how to resolve the conflict") : tr("上传中…", "Uploading…") : tr("文件上传", "File uploads")}</strong>{busy ? <button className="text-button" onClick={cancel}>{tr("取消", "Cancel")}</button> : <button className="icon-button" aria-label={tr("关闭上传结果", "Dismiss upload results")} onClick={() => { setQueue([]); setDirectories([]); setNotice(""); setError(""); }}><Icon name="close" size={14}/></button>}</div>
             {busy && <><progress max={Math.max(totalBytes, 1)} value={completedBytes + progress.bytes} aria-label={tr("已上传字节数", "Uploaded bytes")}/><p className="file-transfer-hint">{formatFileSize(completedBytes + progress.bytes)} / {formatFileSize(totalBytes)} · {queue.filter(item => item.status === "done").length}/{queue.length} {tr("个文件", "files")}</p><p className="file-upload-current" title={progress.path}>{progress.path || tr("正在准备文件夹…", "Preparing folders…")}</p></>}
-            {conflictPath && <div className="file-upload-conflict" role="alert"><p>{tr(`“${conflictPath}”已存在。`, `“${conflictPath}” already exists.`)}</p><div><button onClick={() => chooseConflict("replace")}>{tr("替换", "Replace")}</button><button onClick={() => chooseConflict("skip")}>{tr("跳过", "Skip")}</button><button onClick={() => chooseConflict("rename")}>{tr("保留两个", "Keep both")}</button></div></div>}
+            {conflictPath && <div className="file-upload-conflict" role="alert"><p>{tr(`“${conflictPath}”已存在。`, `“${conflictPath}” already exists.`)}</p><div><button onClick={() => chooseConflict("replace")}>{tr("替换", "Replace")}</button><button onClick={() => chooseConflict("skip")}>{tr("跳过", "Skip")}</button><button onClick={() => chooseConflict("rename")}>{tr("保留两个", "Keep both")}</button></div><p>{tr("对本批后续重名文件统一处理：", "Apply to all remaining conflicts in this batch:")}</p><div><button onClick={() => chooseConflict("replace", true)}>{tr("全部替换", "Replace all")}</button><button onClick={() => chooseConflict("skip", true)}>{tr("全部跳过", "Skip all")}</button><button onClick={() => chooseConflict("rename", true)}>{tr("全部保留", "Keep all")}</button></div></div>}
             {notice && <p className="file-transfer-hint" role="status">{notice}</p>}
             {!busy && remaining && <button className="text-button" disabled={disabled} onClick={() => { if (beforeUpload()) void run(queue, directories); }}>{tr("重试剩余文件", "Retry remaining files")}</button>}
+            {queue.length > 0 && <ul className="file-upload-queue">{queue.map(item => <li key={item.path} className={`file-upload-${item.status}`}><span className="file-upload-status">{tr(({ pending: "待上传", uploading: "上传中", done: "完成", skipped: "已跳过", failed: "失败" } as const)[item.status], ({ pending: "Queued", uploading: "Uploading", done: "Done", skipped: "Skipped", failed: "Failed" } as const)[item.status])}</span><span title={item.path}>{item.path}</span>{item.error && <small>{item.error}</small>}</li>)}</ul>}
             {!busy && queue.some(item => item.resultPath && item.resultPath !== item.path) && <ul className="file-upload-renames">{queue.filter(item => item.resultPath && item.resultPath !== item.path).map(item => <li key={item.path}>{tr("已保存为：", "Saved as ")}{item.resultPath}</li>)}</ul>}
         </section>}
     </div>;

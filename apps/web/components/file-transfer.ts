@@ -96,6 +96,21 @@ export function downloadUrl(endpoint: string, path: string, directory = false) {
     if (directory) query.set("archive", "1");
     return `${endpoint}/download?${query}`;
 }
+export async function downloadSmallFile(endpoint: string, path: string, filename: string): Promise<void> {
+    const response = await fetch(downloadUrl(endpoint, path), { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error(`Download failed (${response.status})`);
+    if (Number(response.headers.get("content-length")) > 50 * 1024 * 1024) throw new Error("File became too large for an in-app download. Refresh files and use the browser download.");
+    const blob = await response.blob();
+    if (blob.size > 50 * 1024 * 1024) throw new Error("File became too large for an in-app download.");
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 const binaryExtensions = new Set("pdf doc docx docm dot dotx dotm xls xlsx xlsm xlsb xlt xltx ppt pptx pptm pps ppsx odt ods odp rtf pages numbers key zip tar gz tgz bz2 xz zst rar 7z jar whl png jpg jpeg gif webp avif heic heif bmp ico tif tiff psd svg svgz mp3 mp4 m4a m4v mov mkv avi wav ogg flac aac opus wma webm exe dll so dylib wasm o a class pyc pyo bin db sqlite sqlite3 ttf otf woff woff2 eot".split(" "));
 /** A candidate for the Runtime's strict UTF-8 check, not proof that the file is text. */
@@ -105,3 +120,11 @@ export function isTextFile(path: string) {
 }
 
 export function isSafeImageFile(path: string) { return /\.(png|jpe?g|gif|webp)$/i.test(path); }
+export function isMarkdownFile(path: string) { return /\.(md|markdown|mdx)$/i.test(path); }
+export const DOCUMENT_PREVIEW_LIMITS = { pdf: 30 * 1024 * 1024, docx: 12 * 1024 * 1024, xlsx: 6 * 1024 * 1024 } as const;
+export function previewFormat(path: string): "pdf" | "docx" | "xlsx" | null {
+    if (/\.pdf$/i.test(path)) return "pdf";
+    if (/\.docx$/i.test(path)) return "docx";
+    if (/\.xlsx$/i.test(path)) return "xlsx";
+    return null;
+}

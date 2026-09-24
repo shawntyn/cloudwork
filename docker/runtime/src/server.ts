@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { once } from 'node:events';
 import type { AgentRuntime } from '@cloud-work/runtime-core';
 import { DshRuntime, parseMcpRunSnapshot } from '@cloud-work/runtime-dsh';
-import { workspacePath, validateId, listFiles, readFileContent, writeFileContent, makeDirectory, renameEntry, deleteEntry } from '@cloud-work/workspace';
+import { workspacePath, validateId, listFiles, searchFiles, readFileWithVersion, writeFileContent, makeDirectory, renameEntry, deleteEntry } from '@cloud-work/workspace';
 import { verifySandbox } from './sandbox.ts';
 import { WorkspaceFileTransfers } from './file-transfer.ts';
 import { FILE_TRANSFER_LIMITS } from '@cloud-work/protocol';
@@ -83,12 +83,14 @@ const server = createServer(async (req, res) => {
       if (segments[2] === 'files' && segments.length <= 5) {
         if (await fileTransfers.handle(req, res, root, segments, url)) return;
         const relative = url.searchParams.get('path') ?? '';
-        if (segments[3] === 'content' && method === 'GET') return json(res, 200, { content: await readFileContent(root, relative) });
+        if (segments[3] === 'search' && method === 'GET') return json(res, 200, await searchFiles(root, url.searchParams.get('query') ?? ''));
+        if (segments[3] === 'content' && method === 'GET') return json(res, 200, await readFileWithVersion(root, relative));
         if (segments[3] === 'content' && method === 'PUT') {
           // A JSON string can expand each content byte to six escaped characters.
           const payload = await body(req, FILE_TRANSFER_LIMITS.maxTextBytes * 6 + 65536);
-          await writeFileContent(root, textField(payload, 'path'), textField(payload, 'content'));
-          return json(res, 200, { ok: true });
+          const expectedVersion = payload.expectedVersion === undefined ? undefined : textField(payload, 'expectedVersion');
+          const version = await writeFileContent(root, textField(payload, 'path'), textField(payload, 'content'), expectedVersion);
+          return json(res, 200, { ok: true, version });
         }
         if (segments.length === 3 && method === 'GET') return json(res, 200, { entries: await listFiles(root, relative) });
         if (segments.length === 3 && method === 'DELETE') {

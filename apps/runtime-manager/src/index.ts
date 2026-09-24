@@ -5,6 +5,7 @@ import { RuntimeManager } from './lifecycle.js';
 import { Runs } from './runs.js';
 import { startReaper } from './reaper.js';
 import { createServer } from './server.js';
+import { startLegacyEventBackfill } from './events.js';
 
 const config = readConfig();
 const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: 2, enableOfflineQueue: false });
@@ -16,17 +17,20 @@ const runs = new Runs(manager, console);
 const server = createServer(manager, runs);
 await server.app.listen({ host: '0.0.0.0', port: config.port });
 let closeReaper: (() => Promise<void>) | undefined;
+let closeEventBackfill: (() => Promise<void>) | undefined;
 try {
   await manager.initialize();
   await runs.recoverStale();
   closeReaper = await startReaper(manager, runs, console);
   server.setReady();
+  closeEventBackfill = startLegacyEventBackfill(redis, console);
 } catch (error) { server.setStartupError(error); }
 
 let closing = false;
 async function shutdown() {
   if (closing) return;
   closing = true;
+  await closeEventBackfill?.();
   await closeReaper?.();
   await runs.shutdown();
   await server.app.close();

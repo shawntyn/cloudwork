@@ -8,6 +8,8 @@ import { acceptLanguages, GUEST_LOCALE_COOKIE, GUEST_THEME_COOKIE, isLocalePrefe
 import "./globals.css";
 import "./workspace-redesign.css";
 import "./file-workbench.css";
+import "./rich-content.css";
+import "./conversation-ux.css";
 
 export const metadata: Metadata = {
   title: "Cloud Work",

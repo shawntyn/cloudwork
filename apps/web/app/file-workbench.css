@@ -143,3 +143,168 @@
   .cw-file-dock .files-panel.file-workbench { width: 100%; }
   .file-entry .file-row { min-height: 40px; }
 }
+
+.file-pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-pane-toolbar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-pane-toolbar > a {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  min-height: 32px;
+  color: var(--text);
+  text-decoration: none;
+}
+.file-search { display: block; padding: 0 12px 9px; }
+.file-search .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.file-search input {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: var(--field);
+  color: var(--text);
+}
+.file-search input::placeholder { color: var(--muted); }
+.file-tree-error, .file-inline-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px;
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  font-size: 12px;
+}
+.file-tree-error button, .file-inline-error button {
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 1px solid var(--danger-line);
+  border-radius: 5px;
+  color: var(--danger-text);
+  background: transparent;
+}
+.file-inline-error { flex: none; }
+.file-inline-error span { flex: 1; min-width: 0; }
+.file-search-result {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 13px;
+  background: transparent;
+  text-align: left;
+  color: var(--text);
+}
+.file-search-result:hover, .file-search-result:focus-visible { background: var(--elevated); }
+.file-search-result > span { min-width: 0; }
+.file-search-result strong, .file-search-result small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-search-result strong { font-size: 12px; font-weight: 500; }
+.file-search-result small { color: var(--muted); font-size: 11px; }
+.file-search-limit { padding: 8px 13px; color: var(--muted); font-size: 11px; }
+.file-workbench .file-entry .file-row { font-size: 12px; }
+.file-workbench .file-kind-badge { font-size: 10px; }
+.file-workbench .file-row-menu > summary { min-width: 32px; min-height: 32px; }
+.file-workbench .file-transfer-buttons > button,
+.file-workbench .file-upload-conflict button,
+.file-workbench .file-actions > button { min-height: 34px; font-size: 11px; }
+.file-workbench .file-upload-destination { font-size: 11px; }
+.file-workbench .file-upload-destination > span { color: var(--text); font-weight: 500; }
+.file-upload-queue { margin: 9px 0 0; padding: 0; list-style: none; }
+.file-upload-queue li { display: flex; align-items: baseline; gap: 7px; padding: 4px 0; color: var(--text); font-size: 11px; }
+.file-upload-queue li > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-upload-queue small { margin-left: auto; color: var(--danger-text); font-size: 10px; }
+.file-upload-status { flex: none; min-width: 46px; color: var(--muted); }
+.file-upload-failed .file-upload-status { color: var(--danger-text); }
+.file-upload-done .file-upload-status { color: var(--green); }
+
+.file-text-reading, .file-code-reading {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.file-text-reading { padding: 20px 24px; }
+.file-code-reading .code-viewer { min-height: 100%; }
+.file-version-conflict {
+  flex: none;
+  max-height: 45%;
+  overflow: auto;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--danger-line);
+  background: var(--danger-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.file-version-conflict strong { color: var(--danger-text); }
+.file-version-conflict p { margin: 4px 0 9px; }
+.file-version-conflict > div { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.file-version-conflict summary { cursor: pointer; color: var(--accent-strong); }
+.file-version-conflict .code-viewer { max-height: 250px; overflow: auto; }
+.file-workbench .editor-meta { min-height: 45px; font-size: 11px; }
+.file-workbench .editor-footer { font-size: 10px; }
+.file-workbench .file-editor-actions { flex-wrap: wrap; justify-content: flex-end; }
+.file-workbench .file-editor-actions .button { min-height: 30px; font-size: 11px; }
+.file-target-path { margin: 8px 0 0; color: var(--muted); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+
+.document-loading, .document-error { padding: 18px; color: var(--muted); font-size: 12px; }
+.document-error { color: var(--danger-text); }
+.document-error p { margin: 0 0 10px; }
+.document-scroll { flex: 1; min-height: 0; overflow: auto; padding: 20px; background: var(--bg); }
+.docx-document {
+  max-width: 900px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 28px 36px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 2px 16px #0001;
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.docx-document h1, .docx-document h2, .docx-document h3 { line-height: 1.3; }
+.docx-document h1 { font-size: 24px; }
+.docx-document h2 { font-size: 20px; }
+.docx-document h3 { font-size: 17px; }
+.docx-document table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.docx-document th, .docx-document td { border: 1px solid var(--line); padding: 6px 8px; }
+.docx-document img { max-width: 100%; height: auto; }
+.pdf-preview, .spreadsheet-preview { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.document-toolbar { display: flex; flex: none; align-items: center; justify-content: center; gap: 9px; min-height: 43px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.document-toolbar button { min-width: 28px; min-height: 28px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-soft); }
+.document-toolbar button:hover { background: var(--elevated); }
+.document-search { display: flex; align-items: center; gap: 8px; min-height: 43px; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.document-search input { flex: 1; min-width: 0; min-height: 30px; border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; background: var(--field); color: var(--text); }
+.document-match { margin: 0; padding: 6px 12px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.pdf-canvas-scroll { flex: 1; min-height: 0; overflow: auto; padding: 18px; text-align: center; background: var(--bg); }
+.pdf-canvas-scroll canvas { display: block; max-width: none; margin: 0 auto; background: white; box-shadow: 0 2px 13px #0002; }
+.pdf-canvas-scroll > span { display: block; padding: 8px; color: var(--muted); font-size: 11px; }
+.spreadsheet-tabs { display: flex; flex: none; gap: 3px; overflow-x: auto; padding: 7px 9px; border-bottom: 1px solid var(--line); }
+.spreadsheet-tabs button { flex: none; min-height: 30px; padding: 5px 11px; border-radius: 5px; background: transparent; color: var(--muted); font-size: 12px; }
+.spreadsheet-tabs button.active { background: var(--elevated); color: var(--text); }
+.spreadsheet-count { margin: 0; padding: 7px 12px; color: var(--muted); font-size: 11px; }
+.spreadsheet-scroll { flex: 1; min-height: 0; overflow: auto; }
+.spreadsheet-scroll table { min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.spreadsheet-scroll th, .spreadsheet-scroll td { max-width: 300px; min-width: 70px; padding: 5px 8px; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.spreadsheet-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--panel-soft); }
+.spreadsheet-scroll tbody th { position: sticky; left: 0; background: var(--panel-soft); }
+
+@media (max-width: 760px) {
+  .file-text-reading { padding: 15px; }
+  .docx-document { padding: 18px; }
+  .file-workbench .editor-meta { align-items: flex-start; flex-direction: column; }
+  .file-workbench .file-editor-actions { justify-content: flex-start; }
+  .file-workbench .file-upload-progress { max-height: 38vh; }
+}

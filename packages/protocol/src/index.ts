@@ -5,8 +5,8 @@ export type AgentEvent =
   | { type: 'tool-result'; id: string; output?: unknown }
   | { type: 'status'; status: 'starting' | 'running' | 'idle' | 'stopped' | 'error' }
   | { type: 'error'; message: string; code?: string }
-  | { type: 'user-message'; text: string };
-export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink'; size: number };
+  | { type: 'user-message'; text: string; requestId?: string };
+export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink'; size: number; modifiedAt: number };
 
 export const FILE_TRANSFER_LIMITS = {
   maxFileBytes: 100 * 1024 * 1024,

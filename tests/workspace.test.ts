@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listFiles, readFileContent, writeFileContent, makeDirectory, renameEntry, deleteEntry, relativeParts, validateId, workspacePath } from '../packages/workspace/src/index.ts';
+import { listFiles, searchFiles, readFileContent, readFileWithVersion, writeFileContent, makeDirectory, renameEntry, deleteEntry, relativeParts, validateId, workspacePath } from '../packages/workspace/src/index.ts';
 
 test('identifiers and traversal inputs are rejected', () => {
   for (const bad of ['../secret','a/../../x','/etc/passwd','a\\..\\secret','a\0b']) assert.throws(() => relativeParts(bad));
@@ -48,4 +48,28 @@ test('POSIX file workflow and symlink escape defenses', async () => {
     await deleteEntry(root,'src');
     await assert.rejects(readFileContent(root,'src/b.ts'));
   } finally { await rm(base,{recursive:true,force:true}); }
+});
+
+test('file versions prevent overwriting a changed draft and bounded search skips symlinks', async () => {
+  const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-work-version-')));
+  const root = path.join(base, 'workspace'), outside = path.join(base, 'outside');
+  await mkdir(root); await mkdir(outside);
+  try {
+    await makeDirectory(root, 'notes');
+    await writeFileContent(root, 'notes/plan.md', '# First');
+    const opened = await readFileWithVersion(root, 'notes/plan.md');
+    assert.match(opened.version, /^[a-f0-9]{64}$/);
+    assert.equal((await listFiles(root, 'notes'))[0]?.modifiedAt > 0, true);
+    await writeFileContent(root, 'notes/plan.md', '# Changed by agent');
+    await assert.rejects(writeFileContent(root, 'notes/plan.md', '# Stale draft', opened.version), /changed since it was opened/);
+    assert.equal(await readFileContent(root, 'notes/plan.md'), '# Changed by agent');
+    const latest = await readFileWithVersion(root, 'notes/plan.md');
+    const savedVersion = await writeFileContent(root, 'notes/plan.md', '# Reviewed draft', latest.version);
+    assert.notEqual(savedVersion, latest.version);
+    await symlink(outside, path.join(root, 'outside-link'));
+    const result = await searchFiles(root, 'plan');
+    assert.deepEqual(result.entries.map(entry => entry.path), ['notes/plan.md']);
+    assert.equal(result.truncated, false);
+    assert.deepEqual((await searchFiles(root, 'outside')).entries.map(entry => entry.path), ['outside-link']);
+  } finally { await rm(base, { recursive: true, force: true }); }
 });

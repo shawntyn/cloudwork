@@ -1,6 +1,6 @@
-import { and, eq, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { db, agentSessions, workspaces } from '@cloud-work/database';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { createHash, randomUUID } from 'node:crypto';
+import { db, agentEvents, agentSessions, workspaces } from '@cloud-work/database';
 import type { AgentEvent } from '@cloud-work/protocol';
 import { HttpError, safeId } from './config.js';
 import { publish, readEvents, terminal } from './events.js';
@@ -10,6 +10,8 @@ export const sessionLock = (id: string) => `session:${safeId(id)}:run-lock`;
 export const workspaceLock = (id: string) => `workspace:${safeId(id)}:operation-lock`;
 export const workspaceDeleted = (id: string) => `workspace:${safeId(id)}:deleted`;
 export const mcpRunKey = (id: string) => `session:${safeId(id)}:mcp-run`;
+const messageRequestKey = (sessionId: string, requestId: string) => `session:${safeId(sessionId)}:message-request:${safeId(requestId)}`;
+const clearMatchingKey = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
 
 function titleFromPrompt(prompt: string) {
   const characters = Array.from(prompt.replace(/\s+/gu, ' ').trim());
@@ -20,8 +22,8 @@ function runErrorCode(message: string) {
   return /timed?\s*out|timeout/i.test(message) ? 'RUN_TIMEOUT' : 'RUN_FAILED';
 }
 
-export async function ownedWorkspace(userId: string, workspaceId: string) {
-  const workspace = (await db.select().from(workspaces).where(and(eq(workspaces.id, safeId(workspaceId)), eq(workspaces.userId, safeId(userId)))).limit(1))[0];
+export async function ownedWorkspace(userId: string, workspaceId: string, includeDeleted = false) {
+  const workspace = (await db.select().from(workspaces).where(and(eq(workspaces.id, safeId(workspaceId)), eq(workspaces.userId, safeId(userId)), includeDeleted ? undefined : isNull(workspaces.deletedAt))).limit(1))[0];
   if (!workspace) throw new HttpError(404, 'Workspace not found');
   return workspace;
 }
@@ -45,14 +47,61 @@ export class Runs {
   private active = new Map<string, Execution>();
   constructor(private manager: RuntimeManager, private log: { error: (error: unknown, message?: string) => void }) {}
 
-  async launch(userId: string, sessionId: string, prompt: string) {
+  async messageStatus(userId: string, sessionId: string, requestId: string) {
+    const session = await ownedSession(userId, sessionId);
+    return this.manager.leases.withLock(workspaceLock(session.workspaceId), async () => {
+      const current = await ownedSession(userId, sessionId);
+      const [record] = await db.select({ event: agentEvents.event }).from(agentEvents).where(and(
+        eq(agentEvents.sessionId, current.id),
+        sql`${agentEvents.event}->>'requestId' = ${requestId}`,
+        sql`${agentEvents.event}->>'type' = 'user-message'`,
+      )).limit(1);
+      const key = messageRequestKey(sessionId, requestId);
+      const value = await this.manager.leases.redis.get(key);
+      if (record) {
+        const prompt = record.event.text;
+        if (value?.startsWith('pending:') && typeof prompt === 'string') {
+          const fingerprint = createHash('sha256').update(prompt).digest('hex');
+          await this.manager.leases.redis.set(key, `accepted:${fingerprint}`, 'EX', 7 * 24 * 3600);
+        }
+        return { state: 'accepted' as const, sessionStatus: current.status };
+      }
+      if (value?.startsWith('accepted:')) return { state: 'accepted' as const, sessionStatus: current.status };
+      if (value?.startsWith('pending:')) {
+        // A crashed manager can leave this marker without ever journaling the
+        // user message. Only clear it after both the run lease and durable
+        // session state confirm that no execution can still accept it.
+        if (this.active.has(sessionId) || await this.manager.leases.redis.exists(sessionLock(sessionId)) || ['running', 'starting'].includes(current.status))
+          return { state: 'pending' as const, sessionStatus: current.status };
+        await this.manager.leases.redis.eval(clearMatchingKey, 1, key, value);
+      }
+      return { state: 'absent' as const, sessionStatus: current.status };
+    });
+  }
+
+  async launch(userId: string, sessionId: string, prompt: string, requestId?: string) {
     const session = await ownedSession(userId, sessionId);
     await this.manager.leases.withLock(workspaceLock(session.workspaceId), async () => {
       const current = await ownedSession(userId, sessionId);
       const wasConfirmedBlank = current.confirmedBlank && current.firstMessageAt === null;
       if (await this.manager.leases.redis.exists(workspaceDeleted(session.workspaceId))) throw new HttpError(410, 'Workspace was deleted');
+      const requestKey = requestId ? messageRequestKey(sessionId, requestId) : undefined;
+      const fingerprint = requestKey ? createHash('sha256').update(prompt).digest('hex') : undefined;
+      if (requestKey) {
+        const previous = await this.manager.leases.redis.get(requestKey);
+        if (previous === `accepted:${fingerprint}`) return;
+        if (previous) throw new HttpError(409, 'Message acceptance is still being confirmed');
+      }
       const token = await this.manager.leases.acquire(sessionLock(sessionId));
-      let markedRunning = false;
+      if (requestKey) {
+        try {
+          if (await this.manager.leases.redis.set(requestKey, `pending:${fingerprint}`, 'EX', 3600, 'NX') !== 'OK') throw new HttpError(409, 'Message acceptance is still being confirmed');
+        } catch (error) {
+          await this.manager.leases.release(sessionLock(sessionId), token);
+          throw error;
+        }
+      }
+      let markedRunning = false, messagePublished = false;
       try {
         // Publish ownership of the busy lease before returning 202, so reaping cannot race startup.
         await this.manager.admitActivity(userId, 'active-agent-tasks', sessionId);
@@ -61,7 +110,9 @@ export class Runs {
         // metadata write must never make a conversation eligible for reuse.
         await db.update(agentSessions).set({ status: 'running', confirmedBlank: false, lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.id, session.id));
         markedRunning = true;
-        await publish(this.manager.leases.redis, sessionId, { type: 'user-message', text: prompt });
+        await publish(this.manager.leases.redis, sessionId, { type: 'user-message', text: prompt, ...(requestId ? { requestId } : {}) });
+        messagePublished = true;
+        if (requestKey) await this.manager.leases.redis.set(requestKey, `accepted:${fingerprint}`, 'EX', 7 * 24 * 3600);
         // Only a newly created draft has a known first-message time. A manual
         // rename made before sending takes precedence over the automatic title.
         await db.update(agentSessions).set({
@@ -78,6 +129,12 @@ export class Runs {
         execution.promise = this.execute(execution, session.workspaceId, prompt);
         void execution.promise.catch(error => this.log.error(error, 'Agent execution cleanup failed'));
       } catch (error) {
+        if (requestKey) {
+          try {
+            if (messagePublished) await this.manager.leases.redis.set(requestKey, `accepted:${fingerprint}`, 'EX', 7 * 24 * 3600);
+            else await this.manager.leases.redis.del(requestKey);
+          } catch (requestError) { this.log.error(requestError, 'Failed to reconcile message acceptance key'); }
+        }
         let durableFailure = false;
         try {
           await publish(this.manager.leases.redis, sessionId, { type: 'error', code: 'RUN_START_FAILED', message: 'The run could not be started' });
@@ -204,8 +261,8 @@ export class Runs {
       await this.terminateExecution(userId, sessionId);
       return { ok: true };
     }
-    await publish(this.manager.leases.redis, sessionId, { type: 'status', status: 'stopped' });
-    await db.update(agentSessions).set({ status: 'idle', lastActivityAt: sql`now()`, updatedAt: sql`now()` }).where(eq(agentSessions.dshSessionId, sessionId));
+    // A late or repeated Stop has no run to cancel. It must not overwrite a
+    // completed error with a misleading "stopped" event.
     return { ok: true };
   }
 

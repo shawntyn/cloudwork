@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
-import { api, errorMessage, type User, type Runtime } from "./client";
+import { api, errorMessage, type User } from "./client";
 import { useLocale } from "./locale";
 import type { LocalePreference, ThemePreference } from "./locale-core";
 export type IconName = "logo" | "plus" | "arrow" | "folder" | "file" | "chevron" | "close" | "refresh" | "trash" | "edit" | "save" | "stop" | "power" | "logout" | "code" | "check" | "terminal" | "alert" | "menu" | "message" | "plug" | "upload" | "download" | "settings";
@@ -71,7 +71,7 @@ export function Header({ user, children }: {
             setBusy(false);
         }
     }
-    return <><header className="app-header"><Brand /><div className="header-center">{children}</div><div className="account"><Link className="icon-button" href="/settings/mcp" aria-label={tr("MCP 连接设置", "MCP connection settings")} title={tr("MCP 连接", "MCP connections")}><Icon name="plug"/></Link><AppearanceControls/><span className="account-email">{user.email}</span><span className="avatar" title={user.name || user.email}>{(user.name || user.email).charAt(0).toUpperCase()}</span><button className="icon-button" aria-label={tr("退出登录", "Sign out")} title={tr("退出登录", "Sign out")} onClick={logout} disabled={busy}><Icon name="logout"/></button></div></header>{error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}</>;
+    return <><header className="app-header"><Brand /><div className="header-center">{children}</div><div className="account"><AppearanceControls/><span className="account-email">{user.email}</span><span className="avatar" title={user.name || user.email}>{(user.name || user.email).charAt(0).toUpperCase()}</span><button className="icon-button" aria-label={tr("退出登录", "Sign out")} title={tr("退出登录", "Sign out")} onClick={logout} disabled={busy}><Icon name="logout"/></button></div></header>{error && <ErrorBanner message={error} onDismiss={() => setError("")}/>}</>;
 }
 export function ErrorBanner({ message, onDismiss, onRetry }: {
     message: string;
@@ -102,36 +102,4 @@ export function Modal({ title, description, children, onClose, className = "" }:
     useEffect(() => { const dialog = ref.current; dialog?.showModal(); return () => dialog?.close(); }, []);
     return <dialog ref={ref} className={`modal ${className}`} aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === ref.current)
         onClose(); }}><div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label={tr("关闭对话框", "Close dialog")}><Icon name="close"/></button></div>{description && <p id={descriptionId} className="muted modal-description">{description}</p>}{children}</dialog>;
-}
-export function RuntimeControl({ runtime, onChange, disabled = false }: {
-    runtime: Runtime | null;
-    onChange: (runtime: Runtime) => void;
-    disabled?: boolean;
-}) {
-    const { tr } = useLocale();
-    const [open, setOpen] = useState(false);
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState("");
-    const status = runtime?.status || "STARTING";
-    async function action(value: "start" | "stop" | "remove") {
-        if (value === "remove" && !window.confirm(tr("重建运行环境？工作区文件和对话会保留，继续使用时会自动重新创建。", "Rebuild the runtime? Workspace files and conversations are kept. It will be recreated when you resume work.")))
-            return;
-        setBusy(true);
-        setError("");
-        try {
-            const data = await api<{
-                runtime: Runtime;
-            }>("/api/runtime", { method: "POST", body: JSON.stringify({ action: value }) });
-            onChange(data.runtime);
-            setOpen(false);
-        }
-        catch (err) {
-            setError(errorMessage(err));
-        }
-        finally {
-            setBusy(false);
-        }
-    }
-    const statusLabels: Record<Runtime["status"], string> = { STARTING: tr("启动中", "Starting"), RUNNING: tr("运行中", "Running"), IDLE: tr("空闲", "Idle"), STOPPED: tr("已停止", "Stopped"), REMOVED: tr("未启动", "Not started"), ERROR: tr("出错", "Error") };
-    return <div className="runtime-control"><button className="runtime-badge" aria-expanded={open} onClick={() => setOpen(!open)}><span className={`status-dot status-${status.toLowerCase()}`}/><span>{busy ? tr("正在更新…", "Updating…") : !runtime ? tr("正在检查…", "Checking…") : statusLabels[status]}</span><Icon name="chevron" size={12} className={open ? "rotated" : "down"}/></button>{open && <div className="runtime-popover"><div className="eyebrow">{tr("运行环境", "RUNTIME")}</div><p>{tr("所有工作区共用此运行环境。停止或重建不会删除工作区文件。", "Shared by your workspaces. Files remain when the runtime stops or is rebuilt.")}</p>{error && <ErrorBanner message={error}/>}<button disabled={busy || disabled} onClick={() => action("start")}><Icon name="power" size={16}/>{tr("启动或重新连接", "Start or reconnect")}</button><button disabled={busy || disabled || !["RUNNING", "IDLE"].includes(status)} onClick={() => action("stop")}><Icon name="stop" size={16}/>{tr("停止运行环境", "Stop runtime")}</button><details className="runtime-advanced"><summary>{tr("高级操作", "Advanced actions")}</summary><button disabled={busy || disabled || status === "REMOVED"} onClick={() => action("remove")}><Icon name="trash" size={16}/>{tr("重建运行环境", "Rebuild runtime")}</button></details>{disabled && <p className="small muted">{tr("请先停止正在运行的 Agent。", "Stop the active agent run first.")}</p>}</div>}</div>;
 }

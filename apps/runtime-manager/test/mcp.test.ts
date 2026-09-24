@@ -134,6 +134,7 @@ test('run cleanup revokes MCP grants after terminal or confirmed cancellation an
       const actions: string[] = [], stored = new Map<string, string>();
       let updates = 0;
       context.mock.method(db, 'update', () => ({ set() { return { async where() { updates++; } }; } }) as never);
+      context.mock.method(db, 'insert', () => ({ values() { actions.push('database-event'); return { async returning() { return [{ streamMs: 1800000000000000 }]; } }; } }) as never);
       const pipeline = { xadd() { actions.push('event'); return pipeline; }, expire() { return pipeline; }, async exec() { return [[null, 1]]; } };
       const manager = {
         config: { ...config, heartbeatMs: scenario === 'renew-failure' ? 5 : 60_000 },
@@ -179,7 +180,10 @@ test('run cleanup revokes MCP grants after terminal or confirmed cancellation an
         assert.ok(actions.includes('renew'));
         assert.ok(actions.indexOf('cancel-confirmed') < actions.indexOf('revoke'));
       }
-      if (scenario === 'terminal') assert.ok(actions.indexOf('event') < actions.indexOf('revoke'));
+      if (scenario === 'terminal') {
+        assert.ok(actions.indexOf('database-event') < actions.indexOf('event'));
+        assert.ok(actions.indexOf('event') < actions.indexOf('revoke'));
+      }
       if (scenario === 'issue-failure') assert.ok(!actions.includes('run'));
       if (scenario === 'revoke-failure') {
         assert.equal(updates, 0);
@@ -198,6 +202,7 @@ test('stale-run recovery revokes durable run identifiers only after execution is
   const actions: string[] = [];
   t.mock.method(db, 'select', () => ({ from() { return { async where() { return [{ id: 'row-a', userId: 'alice', dshSessionId: 'session-a', workspaceId: 'workspace-a' }]; } }; } }) as never);
   t.mock.method(db, 'update', () => ({ set() { return { async where() { actions.push('database'); } }; } }) as never);
+  t.mock.method(db, 'insert', () => ({ values() { return { async returning() { return [{ streamMs: 1800000000000000 }]; } }; } }) as never);
   const pipeline = { xadd() { return pipeline; }, expire() { return pipeline; }, async exec() { return [[null, 1]]; } };
   const manager = {
     leases: {
@@ -215,6 +220,7 @@ test('one unrecoverable tenant retains running metadata without blocking recover
   const recovered: string[] = [], deferred: string[] = [];
   t.mock.method(db, 'select', () => ({ from() { return { async where() { return ['alice', 'bob'].map(user => ({ id: user, userId: user, dshSessionId: user, workspaceId: user })); } }; } }) as never);
   t.mock.method(db, 'update', () => ({ set() { return { async where() {} }; } }) as never);
+  t.mock.method(db, 'insert', () => ({ values() { return { async returning() { return [{ streamMs: 1800000000000000 }]; } }; } }) as never);
   const pipeline = { xadd() { return pipeline; }, expire() { return pipeline; }, async exec() { return [[null, 1]]; } };
   const manager = {
     leases: {

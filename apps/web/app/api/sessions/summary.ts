@@ -18,6 +18,7 @@ export function sessionSummary(session: AgentSession, workspaceName?: string) {
     // Legacy sessions have no reliable message count. Only sessions created
     // with an explicit blank marker may be shown as unused drafts.
     hasMessages: session.firstMessageAt !== null || !session.confirmedBlank,
+    confirmedBlank: session.confirmedBlank,
     pinned: session.pinnedAt !== null,
     archived: session.archivedAt !== null,
   };

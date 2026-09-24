@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, gt, inArray, lte } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lte } from 'drizzle-orm';
 import { db, users, workspaces, agentSessions, mcpConnections, workspaceMcpBindings, mcpRunGrants } from '@cloud-work/database';
 import type { McpAuthType, McpConnectionInput, McpConnectionSummary } from '@cloud-work/protocol';
 import { decryptSecret, encryptSecret, secretContext, tokenHash } from './crypto.ts';
@@ -26,7 +26,7 @@ export class Store {
     return row;
   }
   async workspace(userId: string, id: string, tx: typeof db | Transaction = db) {
-    const [row] = await tx.select().from(workspaces).where(and(eq(workspaces.userId, userId), eq(workspaces.id, id)));
+    const [row] = await tx.select().from(workspaces).where(and(eq(workspaces.userId, userId), eq(workspaces.id, id), isNull(workspaces.deletedAt)));
     if (!row) throw new GatewayError(404, 'Workspace not found');
     return row;
   }
@@ -130,6 +130,7 @@ export class Store {
   async authorize(id: string, token: string): Promise<Grant> {
     const [result] = await db.select({ grant: mcpRunGrants }).from(mcpRunGrants)
       .innerJoin(mcpConnections, and(eq(mcpConnections.id, mcpRunGrants.connectionId), eq(mcpConnections.userId, mcpRunGrants.userId), eq(mcpConnections.enabled, true)))
+      .innerJoin(workspaces, and(eq(workspaces.id, mcpRunGrants.workspaceId), eq(workspaces.userId, mcpRunGrants.userId), isNull(workspaces.deletedAt)))
       .innerJoin(workspaceMcpBindings, and(eq(workspaceMcpBindings.connectionId, mcpRunGrants.connectionId), eq(workspaceMcpBindings.workspaceId, mcpRunGrants.workspaceId), eq(workspaceMcpBindings.userId, mcpRunGrants.userId)))
       .where(and(eq(mcpRunGrants.id, id), eq(mcpRunGrants.tokenHash, tokenHash(token)), gt(mcpRunGrants.expiresAt, new Date())));
     if (!result) throw new GatewayError(401, 'MCP run authorization has expired or was revoked');

@@ -1,12 +1,16 @@
 import { db, workspaces } from '@cloud-work/database';
 import { workspacePath } from '@cloud-work/workspace';
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { api, body, currentUser, manager, rateLimit } from '@/server/api';
+import { api, ApiError, body, currentUser, manager, rateLimit } from '@/server/api';
 export const dynamic = 'force-dynamic';
 export const GET = api(async request => {
   const user = await currentUser(request);
-  return Response.json({ workspaces: await db.select().from(workspaces).where(eq(workspaces.userId,user.id)).orderBy(desc(workspaces.createdAt)) });
+  const view = new URL(request.url).searchParams.get('view') ?? 'active';
+  if (view !== 'active' && view !== 'trash') throw new ApiError(400, 'Invalid workspace view');
+  return Response.json({ workspaces: await db.select().from(workspaces)
+    .where(and(eq(workspaces.userId,user.id), view === 'trash' ? isNotNull(workspaces.deletedAt) : isNull(workspaces.deletedAt)))
+    .orderBy(view === 'trash' ? desc(workspaces.deletedAt) : desc(workspaces.createdAt)) });
 });
 export const POST = api(async request => {
   const user = await currentUser(request); await rateLimit(user.id, 'workspace-create', 20);

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { FILE_TRANSFER_LIMITS } from "@cloud-work/protocol";
-import { downloadUrl, droppedFiles, isSafeImageFile, isTextFile, prepareUploadSelection } from "./file-transfer";
+import { DOCUMENT_PREVIEW_LIMITS, downloadUrl, droppedFiles, isSafeImageFile, isTextFile, prepareUploadSelection, previewFormat } from "./file-transfer";
 
 const file = (name: string, size = 1) => ({ name, size } as File);
 test("upload manifests preserve nested paths and empty folders under the selected destination", () => {
@@ -56,4 +56,9 @@ test("downloads use encoded paths and preview classification never embeds SVG or
         assert.equal(isSafeImageFile(name), true);
         assert.equal(isTextFile(name), false);
     }
+    assert.equal(previewFormat("report.PDF"), "pdf");
+    assert.equal(previewFormat("report.docx"), "docx");
+    assert.equal(previewFormat("report.xlsx"), "xlsx");
+    for (const name of ["report.doc", "report.docm", "report.xls", "report.xlsm", "slides.pptx", "payload.svg"]) assert.equal(previewFormat(name), null);
+    assert.equal(DOCUMENT_PREVIEW_LIMITS.pdf, 30 * 1024 * 1024);
 });

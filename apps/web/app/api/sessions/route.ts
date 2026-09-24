@@ -60,6 +60,7 @@ export const GET = api(async request => {
     .innerJoin(workspaces, and(eq(workspaces.id, agentSessions.workspaceId), eq(workspaces.userId, user.id)))
     .where(and(
       eq(agentSessions.userId, user.id),
+      isNull(workspaces.deletedAt),
       workspaceId === null ? undefined : eq(agentSessions.workspaceId, workspaceId),
       view === 'active' ? isNull(agentSessions.archivedAt) : isNotNull(agentSessions.archivedAt),
       q ? or(ilike(agentSessions.title, pattern), ilike(workspaces.name, pattern)) : undefined,

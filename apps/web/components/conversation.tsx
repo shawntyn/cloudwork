@@ -1,79 +1,11 @@
 "use client";
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { AgentEvent } from "@cloud-work/protocol";
-import { api, errorMessage, type Session } from "./client";
+import { api, ApiClientError, errorMessage, type Session } from "./client";
+import { emptyConversation, reduceConversation, type Block, type ConversationState, type UserBlock } from "./conversation-state";
 import { useLocale } from "./locale";
 import { ErrorBanner, Icon } from "./ui";
-type Block = {
-    key: string;
-    type: "user" | "assistant" | "error";
-    text: string;
-    code?: string;
-} | {
-    key: string;
-    type: "tool";
-    name: string;
-    input?: unknown;
-    output?: unknown;
-    complete: boolean;
-};
-type State = {
-    blocks: Block[];
-    status: string;
-    seen: Set<string>;
-};
-type Action = {
-    type: "reset";
-    status: string;
-} | {
-    type: "restore";
-    state: State;
-} | {
-    type: "event";
-    id: string;
-    event: AgentEvent;
-} | {
-    type: "status";
-    status: string;
-};
-function reduce(state: State, action: Action): State {
-    if (action.type === "restore")
-        return action.state;
-    if (action.type === "reset")
-        return { blocks: [], status: action.status, seen: new Set() };
-    if (action.type === "status")
-        return { ...state, status: action.status };
-    if (action.id && state.seen.has(action.id))
-        return state;
-    const seen = new Set(state.seen);
-    if (action.id)
-        seen.add(action.id);
-    const event = action.event;
-    const blocks = [...state.blocks];
-    const key = action.id || `${Date.now()}-${blocks.length}`;
-    if (event.type === "text-delta") {
-        const last = blocks[blocks.length - 1];
-        if (last?.type === "assistant")
-            blocks[blocks.length - 1] = { ...last, text: last.text + event.text };
-        else
-            blocks.push({ key, type: "assistant", text: event.text });
-    }
-    else if (event.type === "user-message")
-        blocks.push({ key, type: "user", text: event.text });
-    else if (event.type === "tool-start")
-        blocks.push({ key: event.id, type: "tool", name: event.name, input: event.input, complete: false });
-    else if (event.type === "tool-result") {
-        const index = blocks.findLastIndex(block => block.type === "tool" && block.key === event.id);
-        const tool = blocks[index];
-        if (index >= 0 && tool?.type === "tool")
-            blocks[index] = { ...tool, output: event.output, complete: true };
-        else
-            blocks.push({ key: event.id, type: "tool", name: "Tool result", output: event.output, complete: true });
-    }
-    else if (event.type === "error")
-        blocks.push({ key, type: "error", text: event.message, code: event.code });
-    return { blocks, seen, status: event.type === "status" ? event.status : state.status };
-}
+import { RichContent } from "./rich-content";
 function formatValue(value: unknown) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function runErrorLabel(message: string, code: string | undefined, tr: (zh: string, en: string) => string) {
     const resolvedCode = code || (/timed?\s*out|timeout/i.test(message) ? "RUN_TIMEOUT" : "RUN_FAILED");
@@ -92,18 +24,19 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
 }) {
     const { tr, locale } = useLocale();
     const sessionKey = session?.id || "draft:" + workspaceId;
-    const [rawState, dispatch] = useReducer(reduce, { blocks: [], status: session?.status || "idle", seen: new Set<string>() });
-    const cacheRef = useRef<Record<string, State>>({});
+    const [rawState, dispatch] = useReducer(reduceConversation, emptyConversation(session?.status || "idle"));
+    const cacheRef = useRef<Record<string, ConversationState>>({});
     const stateKeyRef = useRef(sessionKey);
     const stateRef = useRef(rawState);
     stateRef.current = rawState;
-    const state = stateKeyRef.current === sessionKey ? rawState : cacheRef.current[sessionKey] || { blocks: [], status: session?.status || "idle", seen: new Set<string>() };
+    const state = stateKeyRef.current === sessionKey ? rawState : cacheRef.current[sessionKey] || emptyConversation(session?.status || "idle");
     const [historyLoading, setHistoryLoading] = useState(!!session?.hasMessages);
     const [drafts, setDrafts] = useState<Record<string, string>>({});
     const promptKey = sessionKey;
     const prompt = drafts[promptKey] || "";
     const setPrompt = (value: string | ((current: string) => string)) => setDrafts(current => ({ ...current, [promptKey]: typeof value === "function" ? value(current[promptKey] || "") : value }));
     const [sending, setSending] = useState(false);
+    const sendingRef = useRef(false);
     const [stopping, setStopping] = useState(false);
     const [error, setError] = useState("");
     const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting");
@@ -114,10 +47,15 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
     const completeRef = useRef(onComplete);
     const sentRef = useRef(onMessageSent);
     const lastEventId = useRef("");
+    const verificationAttempts = useRef<Record<string, number>>({});
     completeRef.current = onComplete;
     sentRef.current = onMessageSent;
-    const isRunning = ["starting", "running"].includes(state.status) || sending;
+    const pendingMessage = [...state.blocks].reverse().find((block): block is UserBlock => block.type === "user" && !!block.pending && block.pending !== "failed");
+    const unresolved = !!pendingMessage;
+    const isRunActive = ["starting", "running"].includes(state.status) || sending;
+    const isRunning = isRunActive || unresolved;
     const activeTool = [...state.blocks].reverse().find(block => block.type === "tool" && !block.complete);
+    const currentTurnId = [...state.blocks].reverse().find(block => block.type === "user")?.turnId;
     useEffect(() => { if (session) onStatusChange(session.id, state.status); }, [session?.id, state.status, onStatusChange]);
     useEffect(() => {
         if (stateKeyRef.current !== sessionKey) {
@@ -125,7 +63,7 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
             stateKeyRef.current = sessionKey;
         }
         const restored = cacheRef.current[sessionKey];
-        dispatch({ type: "restore", state: restored || { blocks: [], status: session?.status || "idle", seen: new Set<string>() } });
+        dispatch({ type: "restore", state: restored || emptyConversation(session?.status || "idle") });
         setHistoryLoading(!!session?.hasMessages && !restored?.blocks.length);
         setError("");
         setStopping(false);
@@ -134,7 +72,7 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
     }, [sessionKey]);
     useEffect(() => {
         if (!historyLoading) return;
-        const timer = window.setTimeout(() => setHistoryLoading(false), 2000);
+        const timer = window.setTimeout(() => setHistoryLoading(false), 12000);
         return () => window.clearTimeout(timer);
     }, [historyLoading, sessionKey]);
     useEffect(() => {
@@ -153,7 +91,8 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                 }
                 setHistoryLoading(false);
                 if (message.lastEventId) lastEventId.current = message.lastEventId;
-                dispatch({ type: "event", id: message.lastEventId, event });
+                stateRef.current = reduceConversation(stateRef.current, { type: "event", id: message.lastEventId, event });
+                dispatch({ type: "restore", state: stateRef.current });
                 if (event.type === "status" && ["idle", "stopped", "error"].includes(event.status)) {
                     setStopping(false);
                     completeRef.current();
@@ -169,33 +108,111 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
     }, [session?.id, connectionAttempt, locale]);
     useEffect(() => { if (followScroll.current && scrollRef.current)
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [state.blocks, state.status]);
-    async function send(event?: React.FormEvent) {
-        event?.preventDefault();
-        if (!prompt.trim() || isRunning)
-            return;
-        const text = prompt.trim();
+    useEffect(() => {
+        if (!session || connection !== "connected") return;
+        const pending = state.blocks.filter((block): block is UserBlock => block.type === "user" && (block.pending === "verifying" || block.pending === "accepted"));
+        if (!pending.length) return;
+        const timer = window.setTimeout(() => {
+            for (const block of pending) {
+                if (!block.requestId || (verificationAttempts.current[block.requestId] || 0) >= 3) continue;
+                verificationAttempts.current[block.requestId] = (verificationAttempts.current[block.requestId] || 0) + 1;
+                void verifyPending(block, session, true);
+            }
+        }, 2500);
+        return () => window.clearTimeout(timer);
+    }, [session?.id, connection, state.blocks]);
+    function applyLocal(action: Parameters<typeof reduceConversation>[1]) {
+        stateRef.current = reduceConversation(stateRef.current, action);
+        dispatch({ type: "restore", state: stateRef.current });
+    }
+    async function requestStatus(activeSession: Session, requestId: string) {
+        return api<{ state: "accepted" | "pending" | "absent"; sessionStatus: string }>(
+            "/api/sessions/" + activeSession.id + "/messages?requestId=" + encodeURIComponent(requestId));
+    }
+    async function verifyPending(block: UserBlock, activeSession: Session | null = session, automatic = false) {
+        if (!activeSession || !block.requestId) return;
+        try {
+            const result = await requestStatus(activeSession, block.requestId);
+            if (!stateRef.current.blocks.some(item => item.type === "user" && item.requestId === block.requestId && item.pending)) return;
+            if (result.state === "accepted") {
+                if (automatic && (verificationAttempts.current[block.requestId] || 0) >= 3 && !["running", "starting"].includes(result.sessionStatus)) {
+                    applyLocal({ type: "pending", requestId: block.requestId });
+                    setError(tr("消息已接收，但回复尚未同步。正在重新加载对话。", "The message was received, but the reply has not synced. Reloading the conversation."));
+                    lastEventId.current = "";
+                    setConnectionAttempt(value => value + 1);
+                    return;
+                }
+                applyLocal({ type: "pending", requestId: block.requestId, pending: "accepted" });
+                if (result.sessionStatus === "running") applyLocal({ type: "status", status: "running" });
+                if (!automatic) setConnectionAttempt(value => value + 1);
+            } else if (result.state === "absent" && !["running", "starting"].includes(result.sessionStatus)) {
+                applyLocal({ type: "pending", requestId: block.requestId, pending: "failed", sendError: tr("消息没有发送，可安全重试。", "The message was not sent. You can retry.") });
+                applyLocal({ type: "status", status: result.sessionStatus });
+            } else {
+                applyLocal({ type: "pending", requestId: block.requestId, pending: "verifying" });
+                if (!automatic) setConnectionAttempt(value => value + 1);
+            }
+        } catch {
+            applyLocal({ type: "pending", requestId: block.requestId, pending: "verifying", sendError: tr("暂时无法确认发送状态。请重新连接后检查。", "The send status could not be confirmed. Reconnect and check again.") });
+        }
+    }
+    async function submit(text: string, requestId = crypto.randomUUID()) {
+        if (!text.trim() || sendingRef.current || isRunning) return;
+        sendingRef.current = true;
         setSending(true);
         setError("");
+        applyLocal({ type: "optimistic", requestId, text });
+        followScroll.current = true;
+        let activeSession: Session | null = session;
         try {
-            const activeSession = session || await onCreateSession();
+            activeSession ||= await onCreateSession();
             if (!session) {
-                setDrafts(current => ({ ...current, [activeSession.id]: text }));
-                cacheRef.current[activeSession.id] = { blocks: [], status: "starting", seen: new Set<string>() };
+                cacheRef.current[activeSession.id] = stateRef.current;
+                setDrafts(current => ({ ...current, [activeSession!.id]: current[promptKey] || text }));
             }
-            dispatch({ type: "status", status: "starting" });
-            await api("/api/sessions/" + activeSession.id + "/messages", { method: "POST", body: JSON.stringify({ prompt: text }) });
-            setDrafts(current => ({ ...current, [activeSession.id]: current[activeSession.id]?.trim() === text ? "" : current[activeSession.id] || "", ...(!session ? { [promptKey]: "" } : {}) }));
+            await api("/api/sessions/" + activeSession.id + "/messages", { method: "POST", body: JSON.stringify({ prompt: text, requestId }) });
+            applyLocal({ type: "pending", requestId, pending: "accepted" });
+            setDrafts(current => ({ ...current, [activeSession!.id]: current[activeSession!.id]?.trim() === text ? "" : current[activeSession!.id] || "", ...(!session ? { [promptKey]: "" } : {}) }));
             sentRef.current();
-            followScroll.current = true;
-        }
-        catch (err) {
-            setError(errorMessage(err));
-            dispatch({ type: "status", status: "idle" });
-        }
-        finally {
+        } catch (err) {
+            if (!activeSession) {
+                applyLocal({ type: "pending", requestId, pending: "failed", sendError: errorMessage(err) });
+                applyLocal({ type: "status", status: "idle" });
+            } else if (err instanceof ApiClientError && [400, 401, 403, 404, 413, 429].includes(err.status)) {
+                applyLocal({ type: "pending", requestId, pending: "failed", sendError: errorMessage(err) });
+                applyLocal({ type: "status", status: "idle" });
+            } else {
+                applyLocal({ type: "pending", requestId, pending: "verifying" });
+                await verifyPending({ key: requestId, type: "user", text, turnId: requestId, requestId }, activeSession);
+            }
+        } finally {
+            sendingRef.current = false;
             setSending(false);
             textareaRef.current?.focus();
         }
+    }
+    async function send(event?: React.FormEvent) {
+        event?.preventDefault();
+        if (!prompt.trim()) return;
+        await submit(prompt.trim());
+    }
+    async function retryRun(turnId: string) {
+        if (!session || isRunning) return;
+        const original = state.blocks.find(block => block.type === "user" && block.turnId === turnId);
+        if (!original || original.type !== "user") return;
+        try {
+            const result = await api<{ session: Session }>("/api/sessions/" + session.id);
+            if (["starting", "running"].includes(result.session.status)) {
+                setError(tr("上一次生成仍在进行，请等待或停止后重试。", "The previous run is still active. Wait or stop it before retrying."));
+                return;
+            }
+            applyLocal({ type: "status", status: result.session.status });
+            await submit(original.text);
+        } catch (err) { setError(errorMessage(err)); }
+    }
+    function editTurn(turnId: string) {
+        const original = state.blocks.find(block => block.type === "user" && block.turnId === turnId);
+        if (original?.type === "user") { setPrompt(original.text); textareaRef.current?.focus(); }
     }
     async function stop() {
         if (!session || stopping)
@@ -257,20 +274,33 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                                     </div>
                                 </details>
                             </div>
-                        ) : block.type === "error" ? (
-                            <div className="cw-run-error" key={block.key + "-" + index}><ErrorBanner message={runErrorLabel(block.text, block.code, tr)}/><details><summary>{tr("技术详情", "Technical details")}</summary><pre>{block.text}</pre></details></div>
+                        ) : block.type === "error" ? block.turnId !== currentTurnId ? (
+                            <details className="cw-run-error cw-run-error-past" key={block.key + "-" + index}>
+                                <summary><Icon name="alert" size={14}/>{tr("这次提问未完成", "This request did not finish")}</summary>
+                                <p>{runErrorLabel(block.text, block.code, tr)}</p><pre>{block.text}</pre>
+                            </details>
+                        ) : (
+                            <div className="cw-run-error" key={block.key + "-" + index}>
+                                <ErrorBanner message={runErrorLabel(block.text, block.code, tr)}/>
+                                <div className="cw-run-error-actions"><button className="button button-secondary" onClick={() => void retryRun(block.turnId)} disabled={isRunning}>{tr("重试这次提问", "Retry this request")}</button><button className="text-button" onClick={() => editTurn(block.turnId)}>{tr("编辑后发送", "Edit and send")}</button></div>
+                                <details><summary>{tr("技术详情", "Technical details")}</summary><pre>{block.text}</pre></details>
+                            </div>
                         ) : (
                             <article key={block.key + "-" + index} className={"message message-" + block.type}>
                                 <div className={"message-avatar " + (block.type === "assistant" ? "agent" : "")}>{block.type === "assistant" ? <Icon name="logo" size={18}/> : <span>Y</span>}</div>
                                 <div className="message-body">
                                     <div className="message-author">{block.type === "assistant" ? "Cloud Work" : tr("你", "You")}{block.type === "assistant" && <span>AGENT</span>}</div>
-                                    <div className="message-text">{block.text}</div>
+                                    <div className="message-text"><RichContent content={block.text} variant="chat"/></div>
+                                    {block.type === "user" && block.pending && <div className={"cw-message-delivery cw-message-delivery-" + block.pending + (block.turnId !== currentTurnId ? " cw-message-delivery-past" : "")} role="status">
+                                        <span>{block.pending === "sending" ? tr("正在发送…", "Sending…") : block.pending === "accepted" ? tr("已接收，等待对话同步…", "Received, syncing conversation…") : block.pending === "verifying" ? block.sendError || tr("正在确认是否已发送…", "Checking whether this was sent…") : block.turnId !== currentTurnId ? tr("这条消息未发送", "This message was not sent") : block.sendError || tr("消息未发送。", "Message was not sent.")}</span>
+                                        {block.turnId !== currentTurnId ? null : block.pending === "failed" ? <><button className="text-button" onClick={() => void submit(block.text, block.requestId)}>{tr("重试发送", "Retry sending")}</button><button className="text-button" onClick={() => editTurn(block.turnId)}>{tr("编辑", "Edit")}</button></> : block.pending !== "sending" ? <button className="text-button" onClick={() => void verifyPending(block)}>{tr("检查状态", "Check status")}</button> : null}
+                                    </div>}
                                 </div>
                             </article>
                         ))}
                     </div>
                 )}
-                {isRunning && <div className="thinking-line" role="status"><span className="thinking-dots"><i/><i/><i/></span><span>{stopping ? tr("正在停止 Agent…", "Stopping the agent…") : state.status === "starting" ? tr("正在启动 Agent…", "Starting your agent…") : activeTool?.type === "tool" ? tr("正在运行 ", "Running ") + activeTool.name : tr("正在处理…", "Working on it…")}</span></div>}
+                {isRunActive && <div className="thinking-line" role="status"><span className="thinking-dots"><i/><i/><i/></span><span>{stopping ? tr("正在停止 Agent…", "Stopping the agent…") : sending ? tr("正在发送消息…", "Sending your message…") : state.status === "starting" ? tr("正在准备 Agent…", "Preparing your agent…") : activeTool?.type === "tool" ? tr("正在运行 ", "Running ") + activeTool.name : tr("正在处理…", "Working on it…")}</span></div>}
             </div>
             <div className="composer-region">
                 {session && connection === "reconnecting" && <div className="connection-warning" role="status"><span className="status-dot status-starting"/><span>{tr("连接中断，正在重连…", "Connection interrupted. Reconnecting…")}</span><button className="text-button" onClick={() => setConnectionAttempt(value => value + 1)}>{tr("重新连接", "Reconnect")}</button></div>}
@@ -284,12 +314,12 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                     }} rows={3}/>
                     <div className="composer-bottom">
                         <div className="composer-context"><Icon name="folder" size={14}/><span>{tr("工作区上下文", "Workspace context")}</span><span className="context-divider"/><span className="muted">DSH</span></div>
-                        {isRunning ? <button type="button" className="button button-stop" onClick={() => void stop()} disabled={stopping || !session}><Icon name="stop" size={14}/>{stopping ? tr("正在停止…", "Stopping…") : tr("停止", "Stop")}</button> : <button type="submit" className="button button-primary button-send" disabled={!prompt.trim()}><span>{tr("发送", "Send")}</span><Icon name="arrow" size={17}/></button>}
+                        {isRunActive ? <button type="button" className="button button-stop" onClick={() => void stop()} disabled={stopping || !session || sending}><Icon name="stop" size={14}/>{stopping ? tr("正在停止…", "Stopping…") : tr("停止", "Stop")}</button> : unresolved && pendingMessage ? <button type="button" className="button button-secondary" onClick={() => void verifyPending(pendingMessage)}>{tr("检查发送状态", "Check send status")}</button> : <button type="submit" className="button button-primary button-send" disabled={!prompt.trim()}><span>{tr("发送", "Send")}</span><Icon name="arrow" size={17}/></button>}
                     </div>
                 </form>
                 <div className="composer-note">
                     <span><kbd>Enter</kbd> {tr("发送", "to send")} · <kbd>Shift + Enter</kbd> {tr("换行", "for a new line")}</span>
-                    <span className="conversation-status"><span className={"status-dot status-" + (isRunning ? "running" : state.status === "error" ? "error" : "idle")}/>{isRunning ? tr("Agent 正在处理", "Agent working") : state.status === "stopped" ? tr("运行已停止", "Run stopped") : state.status === "error" ? tr("运行出错", "Run ended with an error") : tr("随时可以开始", "Ready when you are")}</span>
+                    <span className="conversation-status"><span className={"status-dot status-" + (isRunning ? "running" : state.status === "error" ? "error" : "idle")}/>{isRunActive ? tr("Agent 正在处理", "Agent working") : unresolved ? tr("正在确认发送状态", "Confirming send status") : state.status === "stopped" ? tr("本次生成已停止", "Run stopped") : state.status === "error" ? tr("本次生成未完成", "Run did not finish") : tr("随时可以开始", "Ready when you are")}</span>
                 </div>
             </div>
         </section>

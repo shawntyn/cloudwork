@@ -1,7 +1,7 @@
 import { auth } from '@cloud-work/auth';
 import { relativeParts } from '@cloud-work/workspace';
 import { db, workspaces, agentSessions } from '@cloud-work/database';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { ZodError, z } from 'zod';
 export class ApiError extends Error { constructor(public status: number, message: string, public code?: string) { super(message); } }
@@ -54,7 +54,7 @@ export function validatePath(value: string, allowRoot = false) {
 }
 export async function ownedWorkspace(userId: string, id: string) {
   idSchema.parse(id);
-  const [workspace] = await db.select().from(workspaces).where(and(eq(workspaces.id,id), eq(workspaces.userId,userId))).limit(1);
+  const [workspace] = await db.select().from(workspaces).where(and(eq(workspaces.id,id), eq(workspaces.userId,userId), isNull(workspaces.deletedAt))).limit(1);
   if (!workspace) throw new ApiError(404, 'Workspace not found', 'WORKSPACE_NOT_FOUND');
   return workspace;
 }

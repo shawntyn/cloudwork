@@ -1,12 +1,11 @@
 import Fastify from 'fastify';
-import { and, eq } from 'drizzle-orm';
-import { db, agentSessions } from '@cloud-work/database';
 import { FILE_TRANSFER_LIMITS } from '@cloud-work/protocol';
 import { HttpError, safeId, secureEqual } from './config.js';
 import { leaseKinds, type LeaseKind } from './leases.js';
 import type { RuntimeManager } from './lifecycle.js';
 import { ownedSession, ownedWorkspace, responseJson, workspaceDeleted, workspaceLock, type Runs } from './runs.js';
 import { registerFileTransfers } from './file-transfers.js';
+import { purgeWorkspace, restoreWorkspace, trashWorkspace } from './workspace-trash.js';
 
 type Params = { userId: string; workspaceId: string; sessionId: string; connectionId: string; kind: string; leaseId: string };
 const object = (value: unknown): Record<string, unknown> => {
@@ -81,30 +80,19 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
       return manager.withActivity(user, async () => responseJson(await manager.request(user, `/workspaces/${workspace}`, { method: 'POST' })));
     });
   });
-  app.delete<{ Params: Params }>(`${base}/workspaces/:workspaceId`, async request => {
-    const user = safeId(request.params.userId), workspace = safeId(request.params.workspaceId);
-    return manager.leases.withLock(workspaceLock(workspace), async () => {
-      await ownedWorkspace(user, workspace);
-      if (await manager.leases.redis.get(workspaceDeleted(workspace)) === 'deleted') return { ok: true };
-      const running = await db.select().from(agentSessions).where(and(eq(agentSessions.workspaceId, workspace), eq(agentSessions.status, 'running'))).limit(1);
-      if (running.length) throw new HttpError(409, 'Stop active agents before deleting this workspace');
-      await manager.leases.redis.set(workspaceDeleted(workspace), 'deleting', 'EX', 7 * 24 * 3600);
-      try {
-        const result = await manager.withActivity(user, async () => {
-          const response = await manager.request(user, `/workspaces/${workspace}`, { method: 'DELETE' });
-          // A retry after the runtime removed files but its HTTP response was lost is idempotent.
-          if (response.status === 404) { await response.body?.cancel(); return { ok: true }; }
-          return responseJson(response);
-        });
-        await manager.leases.redis.set(workspaceDeleted(workspace), 'deleted', 'EX', 7 * 24 * 3600);
-        return result;
-      } catch (error) { await manager.leases.redis.del(workspaceDeleted(workspace)); throw error; }
-    });
+  app.post<{ Params: Params }>(`${base}/workspaces/:workspaceId/trash`, request =>
+    trashWorkspace(manager, request.params.userId, request.params.workspaceId));
+  app.post<{ Params: Params }>(`${base}/workspaces/:workspaceId/restore`, request =>
+    restoreWorkspace(manager, request.params.userId, request.params.workspaceId));
+  app.delete<{ Params: Params }>(`${base}/workspaces/:workspaceId`, request => {
+    const body = object(request.body);
+    if (typeof body.confirmName !== 'string') throw new HttpError(400, 'Workspace name confirmation required');
+    return purgeWorkspace(manager, request.params.userId, request.params.workspaceId, body.confirmName);
   });
 
   for (const method of ['GET', 'PUT', 'POST', 'DELETE'] as const) {
-    const suffixes = method === 'GET' || method === 'PUT' ? method === 'GET' ? ['/files', '/files/content'] : ['/files/content'] : ['/files'];
-    for (const suffix of suffixes) app.route<{ Params: Params; Querystring: { path?: string } }>({
+    const suffixes = method === 'GET' || method === 'PUT' ? method === 'GET' ? ['/files', '/files/content', '/files/search'] : ['/files/content'] : ['/files'];
+    for (const suffix of suffixes) app.route<{ Params: Params; Querystring: { path?: string; query?: string } }>({
       method, url: `${base}/workspaces/:workspaceId${suffix}`,
       ...(method === 'PUT' && suffix === '/files/content' ? { bodyLimit: FILE_TRANSFER_LIMITS.maxTextBytes * 6 + 1024 * 1024 } : {}),
       handler: async request => {
@@ -115,6 +103,10 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
           if (request.query.path !== undefined) {
             if (typeof request.query.path !== 'string') throw new HttpError(400, 'Path must be a string');
             query.set('path', request.query.path);
+          }
+          if (request.query.query !== undefined) {
+            if (suffix !== '/files/search' || typeof request.query.query !== 'string' || request.query.query.trim().length < 1 || request.query.query.length > 100) throw new HttpError(400, 'Search query must contain 1–100 characters');
+            query.set('query', request.query.query);
           }
           return manager.withActivity(user, async () => responseJson(await manager.request(user, `/workspaces/${workspace}${suffix}?${query}`, {
             method, ...(method === 'PUT' || method === 'POST' ? { body: JSON.stringify(object(request.body)) } : {}),
@@ -139,8 +131,14 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
   app.post<{ Params: Params }>(`${base}/sessions/:sessionId/messages`, async (request, reply) => {
     const body = object(request.body);
     if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 100_000) throw new HttpError(400, 'Prompt must contain 1–100000 characters');
-    await runs.launch(safeId(request.params.userId), safeId(request.params.sessionId), body.prompt);
+    if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId))) throw new HttpError(400, 'Invalid message request identifier');
+    await runs.launch(safeId(request.params.userId), safeId(request.params.sessionId), body.prompt, body.requestId as string | undefined);
     return reply.code(202).send({ accepted: true });
+  });
+  app.get<{ Params: Params & { requestId: string } }>(`${base}/sessions/:sessionId/messages/:requestId/status`, request => {
+    const requestId = request.params.requestId;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) throw new HttpError(400, 'Invalid message request identifier');
+    return runs.messageStatus(safeId(request.params.userId), safeId(request.params.sessionId), requestId);
   });
   app.post<{ Params: Params }>(`${base}/sessions/:sessionId/cancel`, request => runs.cancel(safeId(request.params.userId), safeId(request.params.sessionId)));
 

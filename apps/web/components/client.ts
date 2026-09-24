@@ -12,6 +12,8 @@ export type Workspace = {
     path: string;
     createdAt: string;
     updatedAt: string;
+    deletedAt: string | null;
+    purgeStartedAt: string | null;
 };
 export type Session = {
     id: string;
@@ -24,6 +26,7 @@ export type Session = {
     pinnedAt: string | null;
     archivedAt: string | null;
     hasMessages: boolean;
+    confirmedBlank: boolean;
     pinned: boolean;
     archived: boolean;
     createdAt: string;
@@ -38,6 +41,7 @@ export type FileEntry = {
     path: string;
     type: "file" | "directory" | "symlink";
     size: number;
+    modifiedAt: number;
 };
 export class ApiClientError extends Error {
     constructor(message: string, public code: string, public status: number) { super(message); }
@@ -53,6 +57,7 @@ const localizedErrors: Record<string, [string, string]> = {
     FORBIDDEN: ["你没有执行此操作的权限。", "You do not have permission to do this."],
     NOT_FOUND: ["没有找到所请求的内容。", "The requested item was not found."],
     WORKSPACE_NOT_FOUND: ["找不到这个工作区。它可能已被删除。", "This workspace was not found. It may have been deleted."],
+    WORKSPACE_RESTORE_EXPIRED: ["工作区已过恢复期限，正在等待彻底删除。", "This workspace can no longer be restored and is awaiting permanent deletion."],
     SESSION_NOT_FOUND: ["找不到这个对话。它可能已被删除。", "This conversation was not found. It may have been deleted."],
     INVALID_PATH: ["文件路径必须位于当前工作区内。", "The file path must stay inside this workspace."],
     CONFLICT: ["内容已变更，请刷新后重试。", "This item changed. Refresh and try again."],
