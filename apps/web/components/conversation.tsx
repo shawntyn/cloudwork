@@ -6,6 +6,7 @@ import { emptyConversation, reduceConversation, type Block, type ConversationSta
 import { useLocale } from "./locale";
 import { ErrorBanner, Icon } from "./ui";
 import { RichContent } from "./rich-content";
+import { clientUuid } from "./client-uuid";
 function formatValue(value: unknown) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function runErrorLabel(message: string, code: string | undefined, tr: (zh: string, en: string) => string) {
     const resolvedCode = code || (/timed?\s*out|timeout/i.test(message) ? "RUN_TIMEOUT" : "RUN_FAILED");
@@ -156,12 +157,18 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
             applyLocal({ type: "pending", requestId: block.requestId, pending: "verifying", sendError: tr("暂时无法确认发送状态。请重新连接后检查。", "The send status could not be confirmed. Reconnect and check again.") });
         }
     }
-    async function submit(text: string, requestId = crypto.randomUUID()) {
+    async function submit(text: string, requestId?: string) {
         if (!text.trim() || sendingRef.current || isRunning) return;
+        let id: string;
+        try { id = requestId ?? clientUuid(); }
+        catch {
+            setError(tr("浏览器无法生成安全消息编号。请使用 HTTPS 或更新浏览器后重试。", "The browser could not create a secure message ID. Use HTTPS or update your browser, then retry."));
+            return;
+        }
         sendingRef.current = true;
         setSending(true);
         setError("");
-        applyLocal({ type: "optimistic", requestId, text });
+        applyLocal({ type: "optimistic", requestId: id, text });
         followScroll.current = true;
         let activeSession: Session | null = session;
         try {
@@ -170,20 +177,20 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                 cacheRef.current[activeSession.id] = stateRef.current;
                 setDrafts(current => ({ ...current, [activeSession!.id]: current[promptKey] || text }));
             }
-            await api("/api/sessions/" + activeSession.id + "/messages", { method: "POST", body: JSON.stringify({ prompt: text, requestId }) });
-            applyLocal({ type: "pending", requestId, pending: "accepted" });
+            await api("/api/sessions/" + activeSession.id + "/messages", { method: "POST", body: JSON.stringify({ prompt: text, requestId: id }) });
+            applyLocal({ type: "pending", requestId: id, pending: "accepted" });
             setDrafts(current => ({ ...current, [activeSession!.id]: current[activeSession!.id]?.trim() === text ? "" : current[activeSession!.id] || "", ...(!session ? { [promptKey]: "" } : {}) }));
             sentRef.current();
         } catch (err) {
             if (!activeSession) {
-                applyLocal({ type: "pending", requestId, pending: "failed", sendError: errorMessage(err) });
+                applyLocal({ type: "pending", requestId: id, pending: "failed", sendError: errorMessage(err) });
                 applyLocal({ type: "status", status: "idle" });
             } else if (err instanceof ApiClientError && [400, 401, 403, 404, 413, 429].includes(err.status)) {
-                applyLocal({ type: "pending", requestId, pending: "failed", sendError: errorMessage(err) });
+                applyLocal({ type: "pending", requestId: id, pending: "failed", sendError: errorMessage(err) });
                 applyLocal({ type: "status", status: "idle" });
             } else {
-                applyLocal({ type: "pending", requestId, pending: "verifying" });
-                await verifyPending({ key: requestId, type: "user", text, turnId: requestId, requestId }, activeSession);
+                applyLocal({ type: "pending", requestId: id, pending: "verifying" });
+                await verifyPending({ key: id, type: "user", text, turnId: id, requestId: id }, activeSession);
             }
         } finally {
             sendingRef.current = false;

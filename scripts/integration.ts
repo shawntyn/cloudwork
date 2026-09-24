@@ -21,6 +21,10 @@ async function signup(label: string) {
 await req('/api/workspaces','','GET',undefined,401); pass('Unauthenticated access denied');
 const a = await signup('A'), b = await signup('B'); pass('Two separate Better Auth accounts registered');
 const login = await req('/api/auth/sign-in/email','','POST',{email:a.email,password}); assert.ok(login.value.user.id === a.id); pass('Email/password login');
+const blockedOrigin = await fetch(base + '/api/workspaces', { method: 'POST', headers: { cookie: a.cookie, origin: 'https://untrusted.example', 'content-type': 'application/json' }, body: '{}' });
+assert.equal(blockedOrigin.status, 403);
+assert.equal((await blockedOrigin.json()).code, 'ORIGIN_MISMATCH');
+pass('Unexpected browser origin is rejected with a specific error');
 assert.deepEqual((await req('/api/preferences',a.cookie)).value,{theme:'system',locale:'auto'});
 assert.deepEqual((await req('/api/preferences',a.cookie,'PATCH',{theme:'dark',locale:'en'})).value,{theme:'dark',locale:'en'});
 assert.deepEqual((await req('/api/preferences',a.cookie)).value,{theme:'dark',locale:'en'});

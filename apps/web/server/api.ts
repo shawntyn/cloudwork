@@ -18,7 +18,7 @@ export function safeOrigin(request: Request, contentType = 'application/json') {
   if (['GET','HEAD','OPTIONS'].includes(request.method)) return;
   const origin = request.headers.get('origin');
   const expected = new URL(process.env.BETTER_AUTH_URL ?? 'http://localhost:3000').origin;
-  if (origin && origin !== expected) throw new ApiError(403, 'Request origin is not allowed');
+  if (origin && origin !== expected) throw new ApiError(403, 'Request origin is not allowed', 'ORIGIN_MISMATCH');
   if (request.headers.get('content-type') && request.headers.get('content-type')!.split(';')[0]!.trim().toLowerCase() !== contentType) throw new ApiError(415, `Use ${contentType}`);
 }
 export function api(fn: (request: Request) => Promise<Response>, options: { contentType?: string } = {}) {

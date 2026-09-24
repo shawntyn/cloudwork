@@ -8,6 +8,7 @@ import { FilePreview } from "./file-preview";
 import { DOCUMENT_PREVIEW_LIMITS, downloadSmallFile, downloadUrl, isMarkdownFile, isSafeImageFile, isTextFile, previewFormat } from "./file-transfer";
 import { useLocale } from "./locale";
 import { CodeViewer, RichContent, languageFromFilename } from "./rich-content";
+import { clientUuid } from "./client-uuid";
 type EditFile = {
     path: string;
     original: string;
@@ -74,7 +75,7 @@ export function FileBrowser({ workspaceId, revision, open, onClose, closeRequest
     const dirty = !!editor && editor.content !== editor.original;
     useEffect(() => {
         if (dirty && !historyGuard.current) {
-            const marker = crypto.randomUUID();
+            const marker = clientUuid();
             historyGuard.current = marker;
             window.history.pushState({ ...window.history.state, cloudworkFileDraft: marker }, "", window.location.href);
         } else if (!dirty && historyGuard.current) {
