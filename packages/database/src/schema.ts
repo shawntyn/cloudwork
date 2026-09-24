@@ -16,6 +16,23 @@ export const agentSessions = pgTable('agent_sessions', {
   eventsBackfilledAt: timestamp('events_backfilled_at', { withTimezone: true }),
   ...dates(),
 }, t => [index('agent_sessions_workspace_idx').on(t.workspaceId), index('agent_sessions_user_idx').on(t.userId), index('agent_sessions_navigation_idx').on(t.userId, t.archivedAt, t.lastActivityAt)]);
+export const messageRequestStatus = pgEnum('message_request_status', ['queued', 'running', 'completed', 'failed']);
+export const agentMessageRequests = pgTable('agent_message_requests', {
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
+  requestId: text('request_id').notNull(),
+  prompt: text('prompt').notNull(),
+  promptFingerprint: text('prompt_fingerprint').notNull(),
+  status: messageRequestStatus('status').default('queued').notNull(),
+  runId: text('run_id'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  mcpRevokedAt: timestamp('mcp_revoked_at', { withTimezone: true }),
+  ...dates(),
+}, t => [
+  primaryKey({ columns: [t.sessionId, t.requestId] }),
+  index('agent_message_requests_status_created_idx').on(t.status, t.createdAt),
+  index('agent_message_requests_cleanup_idx').on(t.status, t.mcpRevokedAt),
+]);
 export const agentEvents = pgTable('agent_events', {
   sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
   streamMs: bigint('stream_ms', { mode: 'number' }).generatedByDefaultAsIdentity({ name: 'agent_events_stream_ms_seq', startWith: 1800000000000000 }),

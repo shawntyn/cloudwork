@@ -1,4 +1,5 @@
 import { api, body, currentUser, ownedSession, manager, rateLimit } from '@/server/api';
+import { submitMessageWithRateLimit } from '@/server/message-admission';
 import { z } from 'zod';
 const sessionId = (request: Request) => new URL(request.url).pathname.split('/')[3]!;
 export const GET = api(async request => {
@@ -9,8 +10,13 @@ export const GET = api(async request => {
   return Response.json(status);
 });
 export const POST = api(async request => {
-  const user = await currentUser(request); const session = await ownedSession(user.id,sessionId(request)); await rateLimit(user.id,'message',30);
-  const {prompt, requestId} = z.object({prompt:z.string().trim().min(1).max(100000),requestId:z.uuid().optional()}).strict().parse(await body(request));
-  await manager(user.id,`/sessions/${session.id}/messages`,'POST',{prompt,requestId});
-  return Response.json({accepted:true},{status:202});
+  const user = await currentUser(request); const session = await ownedSession(user.id,sessionId(request));
+  const {prompt, requestId} = z.object({prompt:z.string().trim().min(1).max(100000),requestId:z.uuid()}).strict().parse(await body(request));
+  const receipt = await submitMessageWithRateLimit(
+    requestId,
+    () => manager(user.id, `/sessions/${session.id}/messages/${requestId}/status`),
+    () => rateLimit(user.id, 'message', 30),
+    () => manager(user.id, `/sessions/${session.id}/messages`, 'POST', {prompt, requestId}),
+  );
+  return Response.json(receipt,{status:202});
 });

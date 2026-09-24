@@ -66,7 +66,7 @@ const stream = (async () => {
     }
   } } catch (error) { if (!abort.signal.aborted) throw error; }
 })();
-await request(`/api/sessions/${session.id}/messages`, cookie, 'POST', { prompt: 'First call the MCP tool cloudwork_add with a=19 and b=23. You must actually call that MCP tool, not calculate with bash. Then run exactly `python verify-offline.py` with bash in this workspace without editing the verification script. Read offline-proof.json. Finally report the MCP result and whether Python sockets were blocked. Do not change any verification code.' }, 202);
+await request(`/api/sessions/${session.id}/messages`, cookie, 'POST', { prompt: 'First call the MCP tool cloudwork_add with a=19 and b=23. You must actually call that MCP tool, not calculate with bash. Then run exactly `python verify-offline.py` with bash in this workspace without editing the verification script. Read offline-proof.json. Finally report the MCP result and whether Python sockets were blocked. Do not change any verification code.', requestId: crypto.randomUUID() }, 202);
 await stream; clearTimeout(timer);
 await mkdir('artifacts', { recursive: true });
 await writeFile('artifacts/mcp-integration.json', JSON.stringify({ workspaceId: workspace.id, sessionId: session.id, connectionId: connection.id, results, events }, null, 2));

@@ -56,6 +56,7 @@ const localizedErrors: Record<string, [string, string]> = {
     UNAUTHENTICATED: ["请先登录后继续。", "Please sign in to continue."],
     FORBIDDEN: ["你没有执行此操作的权限。", "You do not have permission to do this."],
     ORIGIN_MISMATCH: ["当前访问地址未被服务器允许，请联系管理员检查站点地址。", "This site address is not allowed by the server. Ask an administrator to check the site URL."],
+    IDEMPOTENCY_KEY_CONFLICT: ["这条消息的重试编号已用于其他内容。请重新发送。", "This retry identifier was used for different text. Send the message again."],
     NOT_FOUND: ["没有找到所请求的内容。", "The requested item was not found."],
     WORKSPACE_NOT_FOUND: ["找不到这个工作区。它可能已被删除。", "This workspace was not found. It may have been deleted."],
     WORKSPACE_RESTORE_EXPIRED: ["工作区已过恢复期限，正在等待彻底删除。", "This workspace can no longer be restored and is awaiting permanent deletion."],

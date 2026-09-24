@@ -72,7 +72,7 @@ export async function manager(userId: string, suffix: string, method = 'GET', da
     ...(data === undefined ? {} : { body: JSON.stringify(data) }), cache: 'no-store', signal: AbortSignal.timeout(180000),
   });
   const result = await response.json().catch(() => ({ error: 'Runtime manager returned an invalid response' }));
-  if (!response.ok) throw new ApiError(response.status >= 400 && response.status < 500 ? response.status : 503, result.error ?? result.message ?? 'Runtime is unavailable');
+  if (!response.ok) throw new ApiError(response.status >= 400 && response.status < 500 ? response.status : 503, result.error ?? result.message ?? 'Runtime is unavailable', typeof result.code === 'string' ? result.code : undefined);
   return result;
 }
 export async function rateLimit(userId: string, kind: string, max = 120) {

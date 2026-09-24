@@ -15,6 +15,26 @@ function runErrorLabel(message: string, code: string | undefined, tr: (zh: strin
     if (resolvedCode === "RUN_INTERRUPTED") return tr("Agent 运行被中断。工作区文件已保留，请重试。", "The agent run was interrupted. Your workspace files are preserved. Try again.");
     return tr("Agent 运行出错。请重试；可展开查看详情。", "The agent run failed. Try again, or expand for details.");
 }
+export function clearAcceptedDrafts(current: Record<string, string>, submittedDraft: { key: string; value: string } | undefined, sessionId: string, text: string) {
+    if (!submittedDraft || submittedDraft.value.trim() !== text) return current;
+    const next = { ...current };
+    let changed = false;
+    for (const key of new Set([submittedDraft.key, sessionId])) {
+        if (current[key] === submittedDraft.value) { next[key] = ""; changed = true; }
+    }
+    return changed ? next : current;
+}
+export function isIdempotencyKeyConflict(error: unknown): error is ApiClientError {
+    return error instanceof ApiClientError && error.code === "IDEMPOTENCY_KEY_CONFLICT";
+}
+export function isDefinitiveSendRejection(error: unknown): error is ApiClientError {
+    return error instanceof ApiClientError && [400, 401, 403, 404, 413].includes(error.status);
+}
+export function isAcceptedRequestActive(status: { requestStatus?: "queued" | "running" | "completed" | "failed"; sessionStatus: string }) {
+    return status.requestStatus
+        ? ["queued", "running"].includes(status.requestStatus)
+        : ["starting", "running"].includes(status.sessionStatus);
+}
 export function Conversation({ workspaceId, session, onCreateSession, onStatusChange, onComplete, onMessageSent }: {
     workspaceId: string;
     session: Session | null;
@@ -47,6 +67,8 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const completeRef = useRef(onComplete);
     const sentRef = useRef(onMessageSent);
+    const submittedDrafts = useRef<Record<string, { key: string; value: string }>>({});
+    const acknowledgedRequests = useRef<Set<string>>(new Set());
     const lastEventId = useRef("");
     const verificationAttempts = useRef<Record<string, number>>({});
     completeRef.current = onComplete;
@@ -92,6 +114,9 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                 }
                 setHistoryLoading(false);
                 if (message.lastEventId) lastEventId.current = message.lastEventId;
+                if (event.type === "user-message" && event.requestId && stateRef.current.blocks.some(block => block.type === "user" && block.requestId === event.requestId && block.pending)) {
+                    acknowledgeAccepted(session, event.requestId, event.text);
+                }
                 stateRef.current = reduceConversation(stateRef.current, { type: "event", id: message.lastEventId, event });
                 dispatch({ type: "restore", state: stateRef.current });
                 if (event.type === "status" && ["idle", "stopped", "error"].includes(event.status)) {
@@ -126,17 +151,28 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
         stateRef.current = reduceConversation(stateRef.current, action);
         dispatch({ type: "restore", state: stateRef.current });
     }
+    function acknowledgeAccepted(activeSession: Session, requestId: string, text: string) {
+        const requestKey = activeSession.id + ":" + requestId;
+        if (acknowledgedRequests.current.has(requestKey)) return;
+        acknowledgedRequests.current.add(requestKey);
+        const submittedDraft = submittedDrafts.current[requestId];
+        if (submittedDraft) setDrafts(current => clearAcceptedDrafts(current, submittedDraft, activeSession.id, text));
+        delete submittedDrafts.current[requestId];
+        sentRef.current();
+    }
     async function requestStatus(activeSession: Session, requestId: string) {
-        return api<{ state: "accepted" | "pending" | "absent"; sessionStatus: string }>(
+        return api<{ state: "accepted" | "pending" | "absent"; sessionStatus: string; requestStatus?: "queued" | "running" | "completed" | "failed" }>(
             "/api/sessions/" + activeSession.id + "/messages?requestId=" + encodeURIComponent(requestId));
     }
-    async function verifyPending(block: UserBlock, activeSession: Session | null = session, automatic = false) {
+    async function verifyPending(block: UserBlock, activeSession: Session | null = session, automatic = false, failedSend?: unknown) {
         if (!activeSession || !block.requestId) return;
         try {
             const result = await requestStatus(activeSession, block.requestId);
             if (!stateRef.current.blocks.some(item => item.type === "user" && item.requestId === block.requestId && item.pending)) return;
             if (result.state === "accepted") {
-                if (automatic && (verificationAttempts.current[block.requestId] || 0) >= 3 && !["running", "starting"].includes(result.sessionStatus)) {
+                acknowledgeAccepted(activeSession, block.requestId, block.text);
+                applyLocal({ type: "status", status: result.sessionStatus });
+                if (automatic && (verificationAttempts.current[block.requestId] || 0) >= 3 && !isAcceptedRequestActive(result)) {
                     applyLocal({ type: "pending", requestId: block.requestId });
                     setError(tr("消息已接收，但回复尚未同步。正在重新加载对话。", "The message was received, but the reply has not synced. Reloading the conversation."));
                     lastEventId.current = "";
@@ -144,20 +180,20 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                     return;
                 }
                 applyLocal({ type: "pending", requestId: block.requestId, pending: "accepted" });
-                if (result.sessionStatus === "running") applyLocal({ type: "status", status: "running" });
                 if (!automatic) setConnectionAttempt(value => value + 1);
             } else if (result.state === "absent" && !["running", "starting"].includes(result.sessionStatus)) {
-                applyLocal({ type: "pending", requestId: block.requestId, pending: "failed", sendError: tr("消息没有发送，可安全重试。", "The message was not sent. You can retry.") });
+                applyLocal({ type: "pending", requestId: block.requestId, pending: "failed", sendError: failedSend instanceof ApiClientError && failedSend.status === 429 ? errorMessage(failedSend) : tr("消息没有发送，可安全重试。", "The message was not sent. You can retry.") });
                 applyLocal({ type: "status", status: result.sessionStatus });
             } else {
                 applyLocal({ type: "pending", requestId: block.requestId, pending: "verifying" });
                 if (!automatic) setConnectionAttempt(value => value + 1);
             }
         } catch {
+            if (!stateRef.current.blocks.some(item => item.type === "user" && item.requestId === block.requestId && item.pending)) return;
             applyLocal({ type: "pending", requestId: block.requestId, pending: "verifying", sendError: tr("暂时无法确认发送状态。请重新连接后检查。", "The send status could not be confirmed. Reconnect and check again.") });
         }
     }
-    async function submit(text: string, requestId?: string) {
+    async function submit(text: string, requestId?: string, draftKey?: string) {
         if (!text.trim() || sendingRef.current || isRunning) return;
         let id: string;
         try { id = requestId ?? clientUuid(); }
@@ -165,6 +201,7 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
             setError(tr("浏览器无法生成安全消息编号。请使用 HTTPS 或更新浏览器后重试。", "The browser could not create a secure message ID. Use HTTPS or update your browser, then retry."));
             return;
         }
+        if (draftKey && !submittedDrafts.current[id]) submittedDrafts.current[id] = { key: draftKey, value: drafts[draftKey] || "" };
         sendingRef.current = true;
         setSending(true);
         setError("");
@@ -178,19 +215,30 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
                 setDrafts(current => ({ ...current, [activeSession!.id]: current[promptKey] || text }));
             }
             await api("/api/sessions/" + activeSession.id + "/messages", { method: "POST", body: JSON.stringify({ prompt: text, requestId: id }) });
-            applyLocal({ type: "pending", requestId: id, pending: "accepted" });
-            setDrafts(current => ({ ...current, [activeSession!.id]: current[activeSession!.id]?.trim() === text ? "" : current[activeSession!.id] || "", ...(!session ? { [promptKey]: "" } : {}) }));
-            sentRef.current();
+            if (stateRef.current.blocks.some(block => block.type === "user" && block.requestId === id && block.pending))
+                applyLocal({ type: "pending", requestId: id, pending: "accepted" });
+            acknowledgeAccepted(activeSession, id, text);
         } catch (err) {
+            if (activeSession && isIdempotencyKeyConflict(err)) {
+                if (stateRef.current.blocks.some(block => block.type === "user" && block.requestId === id && block.pending)) {
+                    applyLocal({ type: "pending", requestId: id, pending: "failed", sendError: errorMessage(err) });
+                    applyLocal({ type: "status", status: "idle" });
+                } else setError(errorMessage(err));
+                return;
+            }
+            if (activeSession && stateRef.current.blocks.some(block => block.type === "user" && block.requestId === id && !block.pending)) {
+                acknowledgeAccepted(activeSession, id, text);
+                return;
+            }
             if (!activeSession) {
                 applyLocal({ type: "pending", requestId: id, pending: "failed", sendError: errorMessage(err) });
                 applyLocal({ type: "status", status: "idle" });
-            } else if (err instanceof ApiClientError && [400, 401, 403, 404, 413, 429].includes(err.status)) {
+            } else if (isDefinitiveSendRejection(err)) {
                 applyLocal({ type: "pending", requestId: id, pending: "failed", sendError: errorMessage(err) });
                 applyLocal({ type: "status", status: "idle" });
             } else {
                 applyLocal({ type: "pending", requestId: id, pending: "verifying" });
-                await verifyPending({ key: id, type: "user", text, turnId: id, requestId: id }, activeSession);
+                await verifyPending({ key: id, type: "user", text, turnId: id, requestId: id }, activeSession, false, err);
             }
         } finally {
             sendingRef.current = false;
@@ -201,7 +249,7 @@ export function Conversation({ workspaceId, session, onCreateSession, onStatusCh
     async function send(event?: React.FormEvent) {
         event?.preventDefault();
         if (!prompt.trim()) return;
-        await submit(prompt.trim());
+        await submit(prompt.trim(), undefined, promptKey);
     }
     async function retryRun(turnId: string) {
         if (!session || isRunning) return;

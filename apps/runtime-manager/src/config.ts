@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 
 export class HttpError extends Error {
-  constructor(public statusCode: number, message: string) { super(message); }
+  constructor(public statusCode: number, message: string, public code?: string) { super(message); }
 }
 
 export function safeId(value: unknown): string {

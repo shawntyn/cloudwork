@@ -82,7 +82,7 @@ assert.deepEqual((await req('/api/sessions?q=Navigation%20fixture%20alpha',a.coo
 assert.equal((await req('/api/sessions?view=archived&q=Navigation%20fixture%20alpha',a.cookie)).value.sessions[0].id,draft.id);
 await req(`/api/sessions/${draft.id}`,a.cookie,'PATCH',{archived:false});
 pass('Conversation ownership, title/workspace search, pin ordering, cursor and archive view');
-await req(`/api/sessions/${session.id}/messages`,b.cookie,'POST',{prompt:'unauthorized'},404);
+await req(`/api/sessions/${session.id}/messages`,b.cookie,'POST',{prompt:'unauthorized',requestId:crypto.randomUUID()},404);
 await req(`/api/sessions/${session.id}/cancel`,b.cookie,'POST',{},404);
 await req(`/api/sessions/${session.id}/events`,b.cookie,'GET',undefined,404); pass('Session, SSE and cancel ownership enforced');
 const controller = new AbortController();
@@ -99,7 +99,8 @@ const readEvents = (async () => {
 })();
 const timeout = setTimeout(()=>controller.abort(),180000);
 const prompt = process.env.TEST_PROMPT ?? 'Read src/saved.txt, then write agent-proof.txt containing CLOUD_WORK_VERIFIED. Read it back to verify, then respond in three short sentences describing what you read, wrote, and verified.';
-await req(`/api/sessions/${session.id}/messages`,a.cookie,'POST',{prompt},202);
+const requestId = crypto.randomUUID();
+await req(`/api/sessions/${session.id}/messages`,a.cookie,'POST',{prompt,requestId},202);
 const usedSession = (await req(`/api/sessions/${session.id}`,a.cookie)).value.session;
 assert.equal(usedSession.hasMessages,true); assert.ok(usedSession.firstMessageAt); assert.ok(usedSession.lastActivityAt);
 assert.ok(typeof usedSession.title === 'string' && usedSession.title.length > 0);
@@ -107,6 +108,19 @@ pass('First accepted message creates a durable conversation title and activity t
 await readEvents; clearTimeout(timeout);
 assert.ok(events.some(e=>e.type==='user-message')); assert.ok(events.some(e=>e.type==='status' && e.status==='starting'));
 assert.ok(events.some(e=>e.type==='status' && ['idle','stopped','error'].includes(e.status)),'Missing terminal event');
+assert.equal(events.filter(e=>e.type==='user-message' && e.requestId===requestId).length,1);
+const requestStatus = (await req(`/api/sessions/${session.id}/messages?requestId=${requestId}`,a.cookie)).value;
+assert.equal(requestStatus.state,'accepted');
+assert.equal(requestStatus.requestStatus,events.at(-1)?.status==='error'?'failed':'completed');
+const beforeRetry = (await req(`/api/sessions/${session.id}`,a.cookie)).value.session;
+const duplicate = await req(`/api/sessions/${session.id}/messages`,a.cookie,'POST',{prompt,requestId},202);
+assert.equal(duplicate.value.requestStatus,requestStatus.requestStatus);
+const afterRetry = (await req(`/api/sessions/${session.id}`,a.cookie)).value.session;
+assert.equal(afterRetry.lastActivityAt,beforeRetry.lastActivityAt);
+assert.equal(afterRetry.status,beforeRetry.status);
+const changedRetry = await req(`/api/sessions/${session.id}/messages`,a.cookie,'POST',{prompt:prompt+' changed',requestId},409);
+assert.equal(changedRetry.value.code,'IDEMPOTENCY_KEY_CONFLICT');
+pass('Durable message receipt prevents duplicate runs and rejects reused identifiers with different text');
 if(process.env.EXPECT_LLM_SUCCESS === '1') {
  assert.ok(!events.some(e=>e.type==='error'),JSON.stringify(events.filter(e=>e.type==='error')));
  assert.ok(events.filter(e=>e.type==='text-delta').length > 1,'Expected incremental text chunks for the requested three-sentence answer');

@@ -20,7 +20,7 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
     const known: Error & { statusCode?: number } = error instanceof Error ? error : new Error('Unexpected manager error');
     const status = typeof known.statusCode === 'number' ? known.statusCode : 500;
     if (status >= 500) request.log.error(error);
-    return reply.code(status).send({ error: status < 500 || error instanceof HttpError ? known.message : 'Runtime manager operation failed; check service logs' });
+    return reply.code(status).send({ error: status < 500 || error instanceof HttpError ? known.message : 'Runtime manager operation failed; check service logs', ...(error instanceof HttpError && error.code ? { code: error.code } : {}) });
   });
   app.addHook('onRequest', async (request, reply) => {
     if (request.url === '/health') return;
@@ -131,9 +131,9 @@ export function createServer(manager: RuntimeManager, runs: Runs) {
   app.post<{ Params: Params }>(`${base}/sessions/:sessionId/messages`, async (request, reply) => {
     const body = object(request.body);
     if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 100_000) throw new HttpError(400, 'Prompt must contain 1–100000 characters');
-    if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId))) throw new HttpError(400, 'Invalid message request identifier');
-    await runs.launch(safeId(request.params.userId), safeId(request.params.sessionId), body.prompt, body.requestId as string | undefined);
-    return reply.code(202).send({ accepted: true });
+    if (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)) throw new HttpError(400, 'Invalid message request identifier');
+    const receipt = await runs.launch(safeId(request.params.userId), safeId(request.params.sessionId), body.prompt, body.requestId);
+    return reply.code(202).send({ accepted: true, ...receipt });
   });
   app.get<{ Params: Params & { requestId: string } }>(`${base}/sessions/:sessionId/messages/:requestId/status`, request => {
     const requestId = request.params.requestId;
