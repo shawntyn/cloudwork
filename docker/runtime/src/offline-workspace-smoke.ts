@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import yaml
 import docx
+import openpyxl
+import xlsxwriter
 from docx import Document
 
 blocked = []
@@ -33,6 +35,11 @@ data = pd.DataFrame({'value': np.arange(1, 4)})
 total = int(data['value'].sum())
 assert total == 6
 data.to_csv('values.csv', index=False)
+for engine in ('openpyxl', 'xlsxwriter'):
+    filename = 'values-' + engine + '.xlsx'
+    data.to_excel(filename, index=False, engine=engine)
+    assert list(openpyxl.load_workbook(filename).active.values) == [('value',), (1,), (2,), (3,)]
+    assert pd.read_excel(filename, engine='openpyxl').equals(data)
 document = Document()
 document.add_paragraph('Offline document: ' + str(total))
 document.save('result.docx')
@@ -42,7 +49,7 @@ with open('result.yaml', 'w') as stream:
 with open('result.yaml') as stream:
     assert yaml.safe_load(stream) == {'total': 6}
 node = subprocess.run(['node', 'verify-node.cjs'], text=True, capture_output=True, check=True)
-report = {'python': {'numpy': np.__version__, 'pandas': pd.__version__, 'python-docx': docx.__version__, 'PyYAML': yaml.__version__}, 'total': total, 'blockedSockets': blocked, 'node': json.loads(node.stdout)}
+report = {'python': {'numpy': np.__version__, 'pandas': pd.__version__, 'openpyxl': openpyxl.__version__, 'XlsxWriter': xlsxwriter.__version__, 'python-docx': docx.__version__, 'PyYAML': yaml.__version__}, 'total': total, 'blockedSockets': blocked, 'node': json.loads(node.stdout)}
 with open('sandbox-proof.json', 'w') as stream:
     json.dump(report, stream)
 print('OFFLINE_WORKSPACE_VERIFIED')
@@ -96,6 +103,9 @@ try {
   assert.equal(proof.blockedSockets.length, 4);
   assert.equal(proof.node.blocked.length, 4);
   assert.equal((await readFile(join(workspace, 'result.docx'))).subarray(0, 2).toString(), 'PK');
+  for (const engine of ['openpyxl', 'xlsxwriter']) {
+    assert.equal((await readFile(join(workspace, `values-${engine}.xlsx`))).subarray(0, 2).toString(), 'PK');
+  }
   console.log(JSON.stringify({ workspace, sessionId, sandbox: verifySandbox(), proof,
     textChunks: events.filter(event => event.type === 'text-delta').length,
     tools: events.filter(event => event.type === 'tool-start').map(event => event.name),

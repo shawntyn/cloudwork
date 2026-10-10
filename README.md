@@ -130,7 +130,7 @@ DSH Sandbox 保持开启。Runtime 启动时功能探测 bubblewrap / Landlock�
 
 ## 离线用户工作区
 
-用户代码使用镜像内置的 Node.js 24 和 Python 3.11。Python 预装 `pandas`、`numpy`、`python-docx`（导入名 `docx`）和 `PyYAML`（导入名 `yaml`）；运行 `python` 或 `python3` 即可使用。版本及传递依赖锁定在 `docker/runtime/requirements.txt`，安装在 root 拥有的 `/opt/workspace-python` 中；无需在工作区创建虚拟环境或下载安装。Node.js 提供标准库，如 `node:fs`、`node:path`、`node:crypto`；平台 `/app` 中的服务依赖不是用户项目的公共依赖清单。
+用户代码使用镜像内置的 Node.js 24 和 Python 3.11。Python 预装 `pandas`、`numpy`、`openpyxl`、`XlsxWriter`（导入名 `xlsxwriter`）、`python-docx`（导入名 `docx`）和 `PyYAML`（导入名 `yaml`）；运行 `python` 或 `python3` 即可使用。版本及传递依赖锁定在 `docker/runtime/requirements.txt`，安装在 root 拥有的 `/opt/workspace-python` 中；无需在工作区创建虚拟环境或下载安装。Node.js 提供标准库，如 `node:fs`、`node:path`、`node:crypto`；平台 `/app` 中的服务依赖不是用户项目的公共依赖清单。
 
 DSH 工具执行边界同时应用文件沙箱和 Linux seccomp 网络限制，子进程及其后代不能访问互联网、内网、DNS 或回环服务。`npm install`、`pnpm add`、`pip install` 不能在线获取新依赖；增加内置库需修改镜像并重新部署，平台自动更新用户 Runtime。用户已有文件仍保留，本地代码和已有文件不因断网被删除。
 
@@ -144,7 +144,7 @@ docker exec cloud-work-runtime-<test-user-id> \
   /app/docker/runtime/src/offline-workspace-smoke.ts
 ```
 
-该检查通过真实 DSH `bash` 工具运行 Python/Node：断网断言、DataFrame/NumPy 运算、CSV/YAML/DOCX 写入及读回必须全部成功，随后模型仍须正常回复。
+该检查通过真实 DSH `bash` 工具运行 Python/Node：断网断言、DataFrame/NumPy 运算、CSV/YAML/DOCX 写入及读回、两种 Excel 引擎的 XLSX 写入及读回必须全部成功，随后模型仍须正常回复。
 
 ## DSH 实际接口与停止限制
 

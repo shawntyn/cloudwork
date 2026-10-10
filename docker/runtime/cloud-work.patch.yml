@@ -60,8 +60,9 @@
       and their child processes have no network access, including localhost and
       DNS. Do not attempt npm/pnpm/pip downloads, curl, web fetches or network
       retries. Use the installed Node.js standard library or the preinstalled
-      Python environment containing numpy, pandas, python-docx (import docx),
-      and PyYAML (import yaml). Use the confined bash/Python tools to read, write,
+      Python environment containing numpy, pandas, openpyxl, XlsxWriter (import
+      xlsxwriter), python-docx (import docx), and PyYAML (import yaml). Use the
+      confined bash/Python tools to read, write,
       and edit project files; standalone read/write/edit tools are unavailable.
       Local files and offline computation are available.
     personaSuffix: Your working directory is {{cwd}}.

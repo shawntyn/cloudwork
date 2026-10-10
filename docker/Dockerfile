@@ -11,6 +11,7 @@ RUN python3 -m venv /opt/workspace-python \
     && /opt/workspace-python/bin/python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: --retries 5 --timeout 120 -r /opt/cloud-work/requirements.txt \
     && /opt/workspace-python/bin/python -m pip check \
     && /opt/workspace-python/bin/python -c "import io, numpy, pandas, docx, yaml; assert pandas.DataFrame({'value': numpy.array([1, 2, 3])})['value'].sum() == 6; assert yaml.safe_load('offline: true')['offline']; document = docx.Document(); document.add_paragraph('offline'); output = io.BytesIO(); document.save(output); assert output.getbuffer().nbytes > 0" \
+    && /opt/workspace-python/bin/python -c "import io, openpyxl, pandas, xlsxwriter; data = pandas.DataFrame({'value': [1, 2, 3]}); outputs = [io.BytesIO(), io.BytesIO()]; [data.to_excel(output, index=False, engine=engine) for output, engine in zip(outputs, ['openpyxl', 'xlsxwriter'])]; [output.seek(0) for output in outputs]; assert all(list(openpyxl.load_workbook(output).active.values) == [('value',), (1,), (2,), (3,)] for output in outputs)" \
     && chown -R root:root /opt/workspace-python /opt/cloud-work \
     && chmod -R a+rX,go-w /opt/workspace-python /opt/cloud-work
 ENV VIRTUAL_ENV=/opt/workspace-python PYTHONDONTWRITEBYTECODE=1 PIP_NO_INDEX=1
