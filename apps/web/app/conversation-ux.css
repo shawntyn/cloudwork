@@ -1,0 +1,90 @@
+.message-text:has(.rich-content) {
+  white-space: normal;
+}
+
+.cw-run-error {
+  margin: 8px 0 18px 40px;
+}
+
+.cw-run-error > .error-banner {
+  margin-bottom: 8px;
+}
+
+.cw-run-error-actions,
+.cw-message-delivery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.cw-run-error-actions {
+  margin: 8px 0 10px;
+}
+
+.cw-run-error-actions .button {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.cw-run-error details {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cw-run-error details summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.cw-run-error pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.cw-run-error-past {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  border-radius: 7px;
+  padding: 7px 12px;
+}
+
+.cw-run-error-past > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cw-run-error-past > p {
+  margin: 8px 0 0;
+}
+
+.cw-message-delivery {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cw-message-delivery-failed {
+  color: var(--danger-text);
+}
+
+.cw-message-delivery-past {
+  color: var(--muted);
+}
+
+.cw-message-delivery .text-button {
+  min-height: 28px;
+}
+
+@media (max-width: 720px) {
+  .cw-run-error { margin-left: 38px; }
+  .cw-run-error-actions .button,
+  .cw-message-delivery .text-button { min-height: 40px; }
+}

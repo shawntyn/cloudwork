@@ -1,0 +1,1 @@
+ALTER TABLE "desktop_instances" ADD COLUMN "takeover_session_id" text;

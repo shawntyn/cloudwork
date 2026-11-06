@@ -1,0 +1,9 @@
+{
+  "name": "@cloud-work/mcp-gateway", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": {"start":"tsx src/index.ts","typecheck":"tsc --noEmit","build":"tsc --noEmit","test":"tsx --test test/*.test.ts"},
+  "dependencies": {
+    "@cloud-work/database":"workspace:*", "@cloud-work/protocol":"workspace:*",
+    "@modelcontextprotocol/sdk":"1.30.0", "drizzle-orm":"0.45.2", "fastify":"5.12.5",
+    "ipaddr.js":"2.5.0", "undici":"8.10.2", "zod":"4.6.5"
+  }
+}

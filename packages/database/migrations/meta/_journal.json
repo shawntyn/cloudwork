@@ -1,0 +1,62 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789882996541,
+      "tag": "0000_nebulous_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789896957576,
+      "tag": "0001_furry_obadiah_stane",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790138489102,
+      "tag": "0002_rainy_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790139991195,
+      "tag": "0003_warm_martin_li",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790187559895,
+      "tag": "0004_polite_boom_boom",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790223708415,
+      "tag": "0005_old_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793924709053,
+      "tag": "0006_bumpy_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793925538682,
+      "tag": "0007_pale_quasar",
+      "breakpoints": true
+    }
+  ]
+}

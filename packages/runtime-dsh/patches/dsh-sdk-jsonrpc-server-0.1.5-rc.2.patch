@@ -1,0 +1,64 @@
+diff --git a/lib/index.js b/lib/index.js
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -72,6 +72,14 @@
+ 			};
+ 			this.transport.notify("session.event", payload);
+ 		}));
++		// Cloud Work: 0.1.5 publishes live chunks outside the durable event log.
++		// Preserve official frames; SDK session-tree subscriptions filter sessionId.
++		this.disposers.push(ctx.on("agent/assistant-stream", ({ agent, frame }) => {
++			this.transport.notify("session.assistant-stream", {
++				sessionId: String(agent.session.id),
++				frame
++			});
++		}));
+ 		this.disposers.push(ctx.on("agent/status", ({ agent, status }) => {
+ 			this.transport.notify("session.status", {
+ 				sessionId: String(agent.session.id),
+@@ -216,16 +224,35 @@
+ 		return creation;
+ 	}
+ 	async createSession(sessionId) {
+-		const rec = { handle: await this.ctx.agents.create({
+-			sessionId: brandString(sessionId),
+-			meta: { cwd: this.cwd },
+-			agentOptions: {
+-				provider: this.provider,
+-				model: this.model,
+-				...this.reasoningEffort === void 0 ? {} : { reasoningEffort: this.reasoningEffort },
+-				...this.maxTokens === void 0 ? {} : { maxTokens: this.maxTokens }
+-			}
+-		}) };
++		// Cloud Work: the SDK wire has no resume RPC. Reuse the official agent
++		// persistence API; never recreate or overwrite an existing durable log.
++		const agentOptions = {
++			provider: this.provider,
++			model: this.model,
++			...this.reasoningEffort === void 0 ? {} : { reasoningEffort: this.reasoningEffort },
++			...this.maxTokens === void 0 ? {} : { maxTokens: this.maxTokens }
++		};
++		let handle;
++		try {
++			handle = await this.ctx.agents.resume({
++				resumeSessionId: brandString(sessionId),
++				agentOptions
++			});
++		} catch (error) {
++			// This exact public error names absence; corruption and ownership
++			// errors MUST escape instead of falling back to a fresh conversation.
++			if (!(error instanceof Error) || error.name !== "SessionPersistenceNotFoundError") throw error;
++			handle = await this.ctx.agents.create({
++				sessionId: brandString(sessionId),
++				meta: { cwd: this.cwd },
++				agentOptions
++			});
++		}
++		if (handle.agent.session.header.cwd !== this.cwd) {
++			await handle.dispose();
++			throw new Error("Persisted session belongs to another workspace");
++		}
++		const rec = { handle };
+ 		this.sessions.set(sessionId, rec);
+ 		return rec;
+ 	}

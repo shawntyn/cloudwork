@@ -1,0 +1,23 @@
+packages:
+  - apps/*
+  - packages/*
+  - docker/runtime
+
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': false
+  cpu-features: false
+  esbuild: true
+  koffi: true
+  msgpackr-extract: false
+  node-pty: true
+  protobufjs: false
+  sharp: true
+  ssh2: true
+
+patchedDependencies:
+  '@deepseek-ai/dsh-sdk-jsonrpc-server@0.1.5-rc.2': packages/runtime-dsh/patches/dsh-sdk-jsonrpc-server-0.1.5-rc.2.patch
+
+cacheDir: .cache/pnpm-metadata
+stateDir: .cache/pnpm-state
+storeDir: .pnpm-store

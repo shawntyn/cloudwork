@@ -1,0 +1,29 @@
+name: cloud-work-computer-test
+services:
+  runtime-manager:
+    container_name: cloud-work-computer-test-manager
+    environment:
+      MANAGER_CONTAINER_NAME: cloud-work-computer-test-manager
+      MCP_GATEWAY_CONTAINER_NAME: cloud-work-computer-test-mcp
+      DESKTOP_GATEWAY_CONTAINER_NAME: cloud-work-computer-test-desktop-gateway
+      RUNTIME_NETWORK: cloud-work-computer-test-runtime
+  mcp-gateway:
+    container_name: cloud-work-computer-test-mcp
+  desktop-gateway:
+    container_name: cloud-work-computer-test-desktop-gateway
+    ports: !override
+      - '127.0.0.1:3051:3000'
+networks:
+  platform:
+    ipam: {config: [{subnet: 10.247.1.0/24}]}
+  manager-egress:
+    ipam: {config: [{subnet: 10.247.2.0/24}]}
+  mcp-egress:
+    ipam: {config: [{subnet: 10.247.3.0/24}]}
+  web-edge:
+    ipam: {config: [{subnet: 10.247.4.0/24}]}
+  computer-egress:
+    ipam: {config: [{subnet: 10.247.5.0/24}]}
+  cloud-runtime:
+    name: cloud-work-computer-test-runtime
+    ipam: {config: [{subnet: 10.247.6.0/24}]}

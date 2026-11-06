@@ -1,0 +1,15 @@
+# DSH's installed pi-ai adapter supports custom named routes and explicit model catalogs.
+# Values are validated by provider.ts; the API key stays in the child environment.
+- id: llm-pi-ai
+  config:
+    providers:
+      cloud-work-gateway:
+        displayName: Cloud Work Gateway
+        api: !!js process.env.CLOUD_WORK_GATEWAY_API
+        baseURL: !!js process.env.CLOUD_WORK_GATEWAY_BASE_URL
+        apiKeyEnv: CLOUD_WORK_GATEWAY_API_KEY
+        models:
+          - id: !!js process.env.CLOUD_WORK_GATEWAY_MODEL
+            contextWindow: !!js Number(process.env.CLOUD_WORK_GATEWAY_CONTEXT_WINDOW)
+            maxTokens: !!js Number(process.env.CLOUD_WORK_GATEWAY_MAX_TOKENS)
+            input: [text]

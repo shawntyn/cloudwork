@@ -1,0 +1,27 @@
+{
+  "name": "cloud-work",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @cloud-work/web dev",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "test": "tsx --test tests/*.test.ts apps/web/server/*.test.ts apps/web/components/*.test.ts && pnpm --filter @cloud-work/runtime-manager test && pnpm --filter @cloud-work/runtime-dsh test && pnpm --filter @cloud-work/mcp-gateway test && pnpm --filter @cloud-work/computer test",
+    "db:generate": "pnpm --filter @cloud-work/database generate",
+    "db:migrate": "pnpm --filter @cloud-work/database migrate",
+    "test:integration": "tsx scripts/integration.ts",
+    "test:mcp": "tsx scripts/mcp-integration.ts",
+    "test:files": "tsx scripts/file-transfer-integration.ts",
+    "test:lifecycle": "tsx scripts/runtime-lifecycle-integration.ts",
+    "test:computer": "tsx scripts/computer-integration.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "typescript": "5.9.3",
+    "tsx": "4.23.13"
+  }
+}
